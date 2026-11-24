@@ -26,7 +26,7 @@ You need the BELABOX connected to the internet, and a laptop or phone on the sam
    cd Widget/belabox-multicam
    sudo ./install.sh
    ```
-3. **Plug in your USB cameras** and choose **webcam / USB streaming** mode on each. They show up as buttons on their own, with their sound.
+3. **Plug in your USB cameras** and choose **webcam / USB streaming** mode on each. They show up as buttons on their own. **Plug in your USB audio device** too. Its sound is used for the whole stream, whichever camera is live.
 4. **In belaUI**, choose the pipeline **`custom/multicam_switcher`** and press Start.
 5. **On your phone**, open **`http://<belabox-ip>:8181`** and tap a camera to switch.
 
@@ -76,7 +76,9 @@ By default the installer sets `"cameras": "auto"`. Every USB camera that is plug
 | `audio` | Sound for this camera (optional). `"auto"` finds the USB camera's own microphone or audio input. Otherwise give an ALSA device: run `arecord -l`, then use `hw:CARD=<name>` with the name in brackets |
 | `audio_volume` | 0.0–2.0, default 1.0 |
 
-**Audio.** With `"audio_follows_video": true`, you hear the audio of whichever camera is live, crossfaded with the picture. If you use a single mic for everything instead, leave `audio` off the cameras and add it as an always-on source:
+**Audio: one feed for every camera (the installer's default).** `"audio_source": "usb"` uses your USB audio device (mic, receiver or interface) for the whole stream, whichever camera is live. The switcher picks the USB sound card that *isn't* part of a camera, so the cameras' own microphones are never used by mistake. The control page shows a 🎙 pill when the feed is connected, and turns red if it isn't. You can also name a device directly, e.g. `"audio_source": "hw:CARD=usbaudio"`, or use `"camera"` to have each camera's own sound follow the picture.
+
+**Audio: each camera's own sound.** With `"audio_source": "camera"` and `"audio_follows_video": true`, you hear the audio of whichever camera is live, crossfaded with the picture. If you use a single mic for everything instead, leave `audio` off the cameras and add it as an always-on source:
 
 ```json
 "extra_audio": [ { "name": "Lav mic", "device": "hw:CARD=usbaudio", "volume": 1.0 } ]
@@ -157,6 +159,7 @@ Camera numbers start at 1.
 * The finished raw video (NV12) and audio go through `shmsink` to `/tmp/belaswitch.video` and `/tmp/belaswitch.audio`.
 * The switcher writes `<belacoder pipelines>/custom/multicam_switcher`. It reads both sockets with `shmsrc` and uses the same element names as the stock rk3588 pipelines (`venc_bps`, `overlay`, `ptsfixup`, `a_delay`/`v_delay`, `appsink`). Because of that, belacoder's dynamic bitrate and belaUI's audio-codec option work unchanged.
 * Each camera runs in its own sub-pipeline. When one fails, it is removed and retried without interrupting the stream.
+* A watchdog restarts any source that stops sending without reporting an error, which USB audio devices are known to do. A new audio source joins the mix only once it is actually delivering sound. So a frozen device can never silence the stream or make belaUI restart it: the audio just goes quiet until the device recovers.
 
 Nothing in belaUI or belacoder is modified, so BELABOX updates won't break it. If an update ever wipes the `custom/` pipeline folder, restarting `belaswitch` puts the file back.
 

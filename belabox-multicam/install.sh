@@ -26,16 +26,18 @@ cp belaswitch.py /opt/belaswitch/
 cp web/index.html /opt/belaswitch/web/
 # Default: find USB cameras automatically. An unedited config from an
 # earlier install (still containing REPLACE placeholders) is upgraded too.
-if [ ! -f /etc/belaswitch.json ] || grep -q "REPLACE-with" /etc/belaswitch.json; then
+if [ ! -f /etc/belaswitch.json ] || grep -q "REPLACE-with" /etc/belaswitch.json \
+   || { grep -q '"cameras": "auto"' /etc/belaswitch.json && ! grep -q audio_source /etc/belaswitch.json; }; then
   [ -f /etc/belaswitch.json ] && cp /etc/belaswitch.json /etc/belaswitch.json.bak
   cat > /etc/belaswitch.json <<'JSON'
 {
   "output": { "width": 1920, "height": 1080, "fps": 30 },
   "transition": { "type": "fade", "duration_ms": 600 },
-  "cameras": "auto"
+  "cameras": "auto",
+  "audio_source": "usb"
 }
 JSON
-  echo "   /etc/belaswitch.json: cameras found automatically - just plug them in"
+  echo "   /etc/belaswitch.json: cameras found automatically; sound from your USB audio device"
 else
   echo "   keeping your existing /etc/belaswitch.json"
 fi

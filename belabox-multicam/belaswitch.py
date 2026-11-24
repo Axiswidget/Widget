@@ -38,6 +38,11 @@ PIPELINE_NAME = "multicam_switcher"
 VIDEO_SOCKET = "/tmp/belaswitch.video"
 AUDIO_SOCKET = "/tmp/belaswitch.audio"
 RETRY_SECONDS = 3
+MAX_RETRY_SECONDS = 30
+# A source that delivers nothing for this long is restarted. Audio must be
+# short: belacoder restarts the whole stream after ~2-4 s without progress.
+STALL_SECONDS = {"audio": 2.0, "video": 5.0}
+STARTUP_GRACE_SECONDS = 8.0
 AUDIO_CAPS = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2"
 
 DEFAULT_CONFIG = {
@@ -53,6 +58,10 @@ DEFAULT_CONFIG = {
         {"name": "Test B", "type": "test", "pattern": "ball"},
     ],
     "extra_audio": [],
+    # "camera": each camera's own sound, following the picture
+    # "usb":    one standalone USB audio device (not a camera), always on
+    # or an ALSA device such as "hw:CARD=usbaudio", always on
+    "audio_source": "camera",
 }
 
 
@@ -165,6 +174,34 @@ def usb_audio_for_video(video_device, sysfs="/sys"):
     except OSError:
         pass
     return None
+
+
+def standalone_usb_audio(sysfs="/sys"):
+    """The ALSA card of a USB audio device that is not part of a camera.
+
+    USB cameras expose their microphone as a sound card too, so a plain
+    "first USB sound card" could pick a camera. Here a card only counts if
+    its USB device has no video interface. Returns "hw:CARD=<id>" or None.
+    """
+    sound = os.path.join(sysfs, "class/sound")
+    found = []
+    for card in sorted(_listdir(sound)):
+        if not (card.startswith("card") and card[4:].isdigit()):
+            continue
+        try:
+            usb_dev = os.path.dirname(os.path.realpath(os.path.join(sound, card, "device")))
+            if "/usb" not in usb_dev:
+                continue                       # built-in audio, HDMI-in, ...
+            if glob.glob(os.path.join(usb_dev, "*", "video4linux")):
+                continue                       # this sound card belongs to a camera
+            with open(os.path.join(sound, card, "id")) as f:
+                found.append(f.read().strip())
+        except OSError:
+            continue
+    if not found:
+        return None
+    # BELABOX names the USB audio card "usbaudio"; prefer it if present
+    return "hw:CARD=" + ("usbaudio" if "usbaudio" in found else found[0])
 
 
 def probe_device_caps(device):
@@ -289,6 +326,9 @@ class Source:
         self.audio_error = ""
         self.retry_pending = {"video": False, "audio": False}
         self.failing = {"video": False, "audio": False}   # quiet retries while true
+        self.retry_delay = {"video": RETRY_SECONDS, "audio": RETRY_SECONDS}
+        self.last_data = {"video": 0.0, "audio": 0.0}       # monotonic time of last buffer
+        self.attached_at = {"video": 0.0, "audio": 0.0}
 
     @property
     def device(self):
@@ -310,6 +350,14 @@ class Switcher:
         self.sources = [] if self.auto else [Source(i, s) for i, s in enumerate(cfg["cameras"])]
         self.extra_audio = [Source(100 + i, dict(s, name=s.get("name", f"Audio {i + 1}")))
                             for i, s in enumerate(cfg.get("extra_audio", []))]
+        # One fixed audio feed for every camera instead of camera sound
+        self.audio_source = cfg.get("audio_source", "camera")
+        if self.audio_source != "camera":
+            name = "USB audio" if self.audio_source == "usb" else self.audio_source
+            self.extra_audio.append(Source(100 + len(self.extra_audio),
+                                           {"name": name, "device": self.audio_source}))
+            for src in self.sources:
+                src.spec.pop("audio", None)
         self.active = 0
         self.previous = None
         self.fade = None          # (start_time, duration_s, from_idx, to_idx)
@@ -535,6 +583,7 @@ class Switcher:
         self._apply_video_props(s, pad)
         b.get_static_pad("src").link(pad)
         s.vbin, s.vpad = b, pad
+        self._watch_data(s, "video", b.get_static_pad("src"))
         b.sync_state_with_parent()
         s.video_ok = True
         self._announce(s, "video", b)
@@ -545,6 +594,15 @@ class Switcher:
         device = s.spec.get("audio") if tag == "aud" else s.spec.get("device")
         if not device:
             return False
+        if device == "usb":
+            device = standalone_usb_audio()
+            if not device:
+                if not s.failing["audio"]:
+                    log(f"[{s.name}] waiting for a USB audio device (not a camera)")
+                s.failing["audio"] = True
+                s.audio_error = "no USB audio device plugged in"
+                self._schedule_retry(s, "audio")
+                return False
         if device == "auto":
             device = usb_audio_for_video(s.device or "")
             if not device:
@@ -559,14 +617,36 @@ class Switcher:
         except GLib.Error as e:
             log(f"[{s.name}] bad audio config: {e}")
             return False
+        # The source joins the mixer only after its first buffer: a device
+        # that opens but never delivers must not hold up the whole mix.
         self.pipeline.add(b)
-        pad = self.amix.request_pad_simple("sink_%u")
-        pad.set_property("volume", self._audio_volume(s, tag))
-        b.get_static_pad("src").link(pad)
-        s.abin, s.apad = b, pad
+        s.abin, s.apad = b, None
+        ghost = b.get_static_pad("src")
+        state = {"scheduled": False}
+
+        def link_now():
+            if s.abin is not b:
+                return False            # replaced or removed meanwhile
+            pad = self.amix.request_pad_simple("sink_%u")
+            pad.set_property("volume", self._audio_volume(s, tag))
+            ghost.link(pad)
+            s.apad = pad
+            ghost.remove_probe(block_id)
+            s.audio_ok = True
+            self._announce(s, "audio", b, f" ({device})")
+            return False
+
+        def on_first_data(pad, info):
+            if not state["scheduled"]:
+                state["scheduled"] = True
+                GLib.idle_add(link_now)
+            return Gst.PadProbeReturn.OK          # stay blocked until linked
+
+        block_id = ghost.add_probe(
+            Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
+            on_first_data)
+        self._watch_data(s, "audio", ghost)
         b.sync_state_with_parent()
-        s.audio_ok = True
-        self._announce(s, "audio", b, f" ({device})")
         return True
 
     def _announce(self, s, kind, b, extra=""):
@@ -579,6 +659,7 @@ class Switcher:
             current = s.vbin if kind == "video" else s.abin
             if current is b and s.failing[kind]:
                 s.failing[kind] = False
+                s.retry_delay[kind] = RETRY_SECONDS
                 if kind == "video":
                     s.error = ""
                 else:
@@ -586,6 +667,45 @@ class Switcher:
                 log(f"[{s.name}] {kind} back{extra}")
             return False
         GLib.timeout_add_seconds(2, check)
+
+    def _watch_data(self, s, kind, pad):
+        now = time.monotonic()
+        s.attached_at[kind] = now
+        s.last_data[kind] = 0.0
+
+        def on_data(_pad, _info):
+            s.last_data[kind] = time.monotonic()
+            return Gst.PadProbeReturn.OK
+        pad.add_probe(Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST, on_data)
+
+    def _watchdog(self):
+        """Restart any source that has stopped delivering without an error."""
+        now = time.monotonic()
+        for s in self.sources + self.extra_audio:
+            for kind in ("video", "audio"):
+                b = s.vbin if kind == "video" else s.abin
+                if b is None or getattr(b, "_dying", False):
+                    continue
+                last = s.last_data[kind]
+                if last == 0.0:
+                    silent_for = now - s.attached_at[kind] - STARTUP_GRACE_SECONDS
+                    reason = "never started sending"
+                else:
+                    silent_for = now - last
+                    reason = "stopped sending"
+                if silent_for <= STALL_SECONDS[kind]:
+                    continue
+                if kind == "video":
+                    s.error = f"camera {reason} - restarting"
+                else:
+                    s.audio_error = f"audio {reason} - restarting"
+                if not s.failing[kind]:
+                    log(f"[{s.name}] {kind} {reason} - restarting it")
+                s.failing[kind] = True
+                s.retry_delay[kind] = min(MAX_RETRY_SECONDS, s.retry_delay[kind] * 2)
+                self._detach(s, kind)
+                self._schedule_retry(s, kind)
+        return True
 
     def _detach(self, s, kind):
         b, pad, mixer = ((s.vbin, s.vpad, self.comp) if kind == "video"
@@ -596,8 +716,11 @@ class Switcher:
         if pad is not None:
             src.unlink(pad)
             mixer.release_request_pad(pad)
-        b.set_state(Gst.State.NULL)
+        b._dying = True
         self.pipeline.remove(b)
+        # A hung USB device can block a state change; do it off the main
+        # loop so switching and the control page never freeze.
+        threading.Thread(target=b.set_state, args=(Gst.State.NULL,), daemon=True).start()
         if kind == "video":
             s.vbin = s.vpad = None
             s.video_ok = False
@@ -617,7 +740,7 @@ class Switcher:
             else:
                 self._attach_audio(s, "aud" if s.index < 100 else "extra")
             return False
-        GLib.timeout_add_seconds(RETRY_SECONDS, retry)
+        GLib.timeout_add_seconds(int(s.retry_delay[kind]), retry)
 
     def _owner(self, obj):
         while obj is not None:
@@ -748,6 +871,10 @@ class Switcher:
             "fading": self.fade is not None,
             "previews": self.previews,
             "output": f"{self.w}x{self.h}@{self.fps}",
+            "audio_feeds": [
+                {"name": a.name, "online": a.audio_ok, "error": a.audio_error}
+                for a in self.extra_audio
+            ],
             "cameras": [
                 {"index": s.index, "name": s.name, "online": s.video_ok,
                  "audio": bool(s.spec.get("audio")), "audio_online": s.audio_ok,
@@ -767,6 +894,7 @@ class Switcher:
                 pass
         self.loop = GLib.MainLoop()
         self.pipeline.set_state(Gst.State.PLAYING)
+        GLib.timeout_add(500, self._watchdog)
         for s in self.sources:
             self._attach_video(s)
             self._attach_audio(s, "aud")
@@ -788,8 +916,9 @@ class Switcher:
         for path in find_usb_cameras():
             if path in known:
                 continue
-            spec = {"name": friendly_camera_name(path), "type": "usb",
-                    "device": path, "audio": "auto"}
+            spec = {"name": friendly_camera_name(path), "type": "usb", "device": path}
+            if self.audio_source == "camera":
+                spec["audio"] = "auto"
             s = Source(len(self.sources), spec)
             self.sources.append(s)
             log(f"[{s.name}] found camera {len(self.sources)}: {path}")

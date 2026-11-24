@@ -71,6 +71,7 @@
 <main>
   <header>
     <h1>Multicam Switcher</h1>
+    <span class="pill" id="audio" hidden></span>
     <span class="pill" id="out">…</span>
     <span class="pill" id="conn">connecting</span>
   </header>
@@ -113,6 +114,14 @@ async function api(path, body) {
 function render(s) {
   state = s; previews = s.previews;
   $('out').textContent = s.output;
+  const feeds = s.audio_feeds || [];
+  $('audio').hidden = feeds.length === 0;
+  if (feeds.length) {
+    const bad = feeds.filter((a) => !a.online);
+    $('audio').textContent = bad.length ? `🔇 ${bad[0].name}: not connected` : `🎙 ${feeds.map((a) => a.name).join(', ')}`;
+    $('audio').classList.toggle('err', bad.length > 0);
+    $('audio').title = bad.map((a) => a.error).filter(Boolean).join('\n');
+  }
   $('tFade').classList.toggle('on', s.transition === 'fade');
   $('tCut').classList.toggle('on', s.transition === 'cut');
   if (document.activeElement !== $('dur')) $('dur').value = s.duration_ms;
