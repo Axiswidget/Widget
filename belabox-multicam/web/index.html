@@ -32,6 +32,7 @@
   .seg button { background: var(--panel); color: var(--text); border: 0; padding: 10px 18px;
                 font: inherit; font-weight: 600; cursor: pointer; min-height: 44px; }
   .seg button.on { background: var(--accent); color: #fff; }
+  .seg button.lbl { color: var(--muted); font-weight: 500; cursor: default; padding: 10px 12px; }
   label.dur { display: flex; align-items: center; gap: 8px; color: var(--muted); flex: 1; min-width: 220px; }
   label.dur input { flex: 1; accent-color: var(--accent); }
   label.dur output { color: var(--text); font-variant-numeric: tabular-nums; width: 4.2em; text-align: right; }
@@ -86,6 +87,7 @@
       <button id="tFade" type="button">Fade</button>
       <button id="tCut" type="button">Cut</button>
     </div>
+    <div class="seg" role="group" aria-label="Audio source" id="audioSel" hidden></div>
     <label class="dur">Fade
       <input id="dur" type="range" min="100" max="3000" step="50">
       <output id="durVal"></output>
@@ -114,14 +116,26 @@ async function api(path, body) {
 function render(s) {
   state = s; previews = s.previews;
   $('out').textContent = s.output;
-  const feeds = s.audio_feeds || [];
-  $('audio').hidden = feeds.length === 0;
-  if (feeds.length) {
-    const bad = feeds.filter((a) => !a.online);
-    $('audio').textContent = bad.length ? `🔇 ${bad[0].name}: not connected` : `🎙 ${feeds.map((a) => a.name).join(', ')}`;
-    $('audio').classList.toggle('err', bad.length > 0);
-    $('audio').title = bad.map((a) => a.error).filter(Boolean).join('\n');
+  const feed = s.audio_feed;
+  $('audio').hidden = !feed;
+  if (feed) {
+    $('audio').textContent = feed.online ? `🎙 ${feed.name}` : `🔇 ${feed.name}: no sound`;
+    $('audio').classList.toggle('err', !feed.online);
+    $('audio').title = feed.error || '';
   }
+  // Audio source picker: exactly one feed is used at a time
+  const sel = $('audioSel'), choices = Object.entries(s.audio_choices || {});
+  sel.hidden = !s.audio_selectable;
+  if (s.audio_selectable && sel.children.length !== choices.length + 1) {
+    sel.innerHTML = '<button type="button" disabled class="lbl">Audio</button>';
+    choices.forEach(([key, label]) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.dataset.key = key; b.textContent = label.replace(/ audio$/i, '');
+      b.onclick = () => api('/api/audio', { source: key });
+      sel.appendChild(b);
+    });
+  }
+  sel.querySelectorAll('button[data-key]').forEach((b) => b.classList.toggle('on', b.dataset.key === s.audio_source));
   $('tFade').classList.toggle('on', s.transition === 'fade');
   $('tCut').classList.toggle('on', s.transition === 'cut');
   if (document.activeElement !== $('dur')) $('dur').value = s.duration_ms;

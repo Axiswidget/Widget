@@ -26,7 +26,7 @@ You need the BELABOX connected to the internet, and a laptop or phone on the sam
    cd Widget/belabox-multicam
    sudo ./install.sh
    ```
-3. **Plug in your USB cameras** and choose **webcam / USB streaming** mode on each. They show up as buttons on their own. **Plug in your USB audio device** too. Its sound is used for the whole stream, whichever camera is live.
+3. **Plug in your USB cameras** and choose **webcam / USB streaming** mode on each. They show up as buttons on their own. **Plug in your USB audio device** too. Its sound is used for the whole stream, whichever camera is live. To use HDMI audio instead, tap **HDMI** next to "Audio" on the control page.
 4. **In belaUI**, choose the pipeline **`custom/multicam_switcher`** and press Start.
 5. **On your phone**, open **`http://<belabox-ip>:8181`** and tap a camera to switch.
 
@@ -76,7 +76,12 @@ By default the installer sets `"cameras": "auto"`. Every USB camera that is plug
 | `audio` | Sound for this camera (optional). `"auto"` finds the USB camera's own microphone or audio input. Otherwise give an ALSA device: run `arecord -l`, then use `hw:CARD=<name>` with the name in brackets |
 | `audio_volume` | 0.0–2.0, default 1.0 |
 
-**Audio: one feed for every camera (the installer's default).** `"audio_source": "usb"` uses your USB audio device (mic, receiver or interface) for the whole stream, whichever camera is live. The switcher picks the USB sound card that *isn't* part of a camera, so the cameras' own microphones are never used by mistake. The control page shows a 🎙 pill when the feed is connected, and turns red if it isn't. You can also name a device directly, e.g. `"audio_source": "hw:CARD=usbaudio"`, or use `"camera"` to have each camera's own sound follow the picture.
+**Audio: one feed for every camera (the installer's default).** The control page has an **Audio: USB | HDMI** switch. Exactly one of them is used for the whole stream, whichever camera is live, and your choice is remembered after a restart. Swapping audio is gapless: the new feed takes over as soon as it delivers sound.
+
+* **USB** is your USB audio device (mic, receiver or interface). The switcher picks the USB sound card that *isn't* part of a camera, so the cameras' own microphones are never used by mistake.
+* **HDMI** is the sound on the Rock 5's HDMI input (`hdmi_audio_device`, default `hw:CARD=rockchiphdmiin`).
+
+A 🎙 pill shows the feed is delivering sound. It turns red ("no sound") if not, for example HDMI selected with nothing plugged in. You never get two feeds mixed together. In the config, `"audio_source"` sets the starting choice (`"usb"` or `"hdmi"`). You can also give a fixed ALSA device such as `"hw:CARD=usbaudio"` (no switch is shown then), or `"camera"` to have each camera's own sound follow the picture.
 
 **Audio: each camera's own sound.** With `"audio_source": "camera"` and `"audio_follows_video": true`, you hear the audio of whichever camera is live, crossfaded with the picture. If you use a single mic for everything instead, leave `audio` off the cameras and add it as an always-on source:
 
@@ -149,6 +154,7 @@ Camera numbers start at 1.
 | `GET /api/cut?cam=2` / `GET /api/fade?cam=2` | Force a cut or a fade |
 | `GET /api/switch?cam=2&duration_ms=1500` | Use a one-off fade length |
 | `POST /api/settings` `{"transition":"cut","duration_ms":800}` | Change the defaults |
+| `POST /api/audio?source=usb` / `?source=hdmi` | Choose the audio feed |
 | `GET /api/state` | Live camera, camera status and settings (JSON) |
 | `GET /preview/program.jpg`, `/preview/1.jpg` … | Preview stills |
 

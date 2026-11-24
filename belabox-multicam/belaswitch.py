@@ -43,6 +43,13 @@ MAX_RETRY_SECONDS = 30
 # short: belacoder restarts the whole stream after ~2-4 s without progress.
 STALL_SECONDS = {"audio": 2.0, "video": 5.0}
 STARTUP_GRACE_SECONDS = 8.0
+STATE_FILE = "/var/lib/belaswitch/state.json"   # remembers the audio choice
+# The audio feeds you can pick between on the control page (one at a time)
+AUDIO_CHOICES = {
+    "usb": "USB audio",     # the USB sound card that isn't part of a camera
+    "hdmi": "HDMI audio",   # the Rock 5's HDMI input
+}
+HANDOVER_SECONDS = 1.5      # how long the old feed may overlap the new one
 AUDIO_CAPS = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2"
 
 DEFAULT_CONFIG = {
@@ -62,7 +69,27 @@ DEFAULT_CONFIG = {
     # "usb":    one standalone USB audio device (not a camera), always on
     # or an ALSA device such as "hw:CARD=usbaudio", always on
     "audio_source": "camera",
+    "hdmi_audio_device": "hw:CARD=rockchiphdmiin",
 }
+
+
+def load_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, STATE_FILE)
+    except OSError as e:
+        log(f"could not save {STATE_FILE}: {e}")
 
 
 def log(*args):
@@ -350,12 +377,20 @@ class Switcher:
         self.sources = [] if self.auto else [Source(i, s) for i, s in enumerate(cfg["cameras"])]
         self.extra_audio = [Source(100 + i, dict(s, name=s.get("name", f"Audio {i + 1}")))
                             for i, s in enumerate(cfg.get("extra_audio", []))]
-        # One fixed audio feed for every camera instead of camera sound
+        # One audio feed for every camera instead of camera sound. If the
+        # config picks "usb" or "hdmi", the control page can swap between
+        # them, and the last choice is remembered across restarts.
         self.audio_source = cfg.get("audio_source", "camera")
+        if self.audio_source in AUDIO_CHOICES:
+            saved = load_state().get("audio_source")
+            if saved in AUDIO_CHOICES:
+                self.audio_source = saved
+        self.audio_selectable = self.audio_source in AUDIO_CHOICES
+        self.feed = None
+        self._next_audio_index = 100 + len(self.extra_audio)
         if self.audio_source != "camera":
-            name = "USB audio" if self.audio_source == "usb" else self.audio_source
-            self.extra_audio.append(Source(100 + len(self.extra_audio),
-                                           {"name": name, "device": self.audio_source}))
+            self.feed = self._new_feed(self.audio_source)
+            self.extra_audio.append(self.feed)
             for src in self.sources:
                 src.spec.pop("audio", None)
         self.active = 0
@@ -634,6 +669,10 @@ class Switcher:
             ghost.remove_probe(block_id)
             s.audio_ok = True
             self._announce(s, "audio", b, f" ({device})")
+            old = getattr(s, "replaces", None)
+            if old is not None:          # new feed is live: drop the old one now
+                s.replaces = None
+                self._retire(old)
             return False
 
         def on_first_data(pad, info):
@@ -735,6 +774,8 @@ class Switcher:
         s.retry_pending[kind] = True
 
         def retry():
+            if getattr(s, "retired", False):
+                return False
             if kind == "video":
                 self._attach_video(s)
             else:
@@ -753,6 +794,7 @@ class Switcher:
                     for s in pool:
                         if s.index == idx:
                             return s, kind
+                    return "stale", kind    # from a source we already removed
             obj = obj.get_parent()
         return None, None
 
@@ -760,6 +802,8 @@ class Switcher:
         if msg.type == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
             s, kind = self._owner(msg.src)
+            if s == "stale":
+                return
             if s is None:
                 log(f"fatal pipeline error: {err.message} ({dbg})")
                 self.loop.quit()
@@ -871,6 +915,12 @@ class Switcher:
             "fading": self.fade is not None,
             "previews": self.previews,
             "output": f"{self.w}x{self.h}@{self.fps}",
+            "audio_selectable": self.audio_selectable,
+            "audio_source": self.audio_source,
+            "audio_choices": AUDIO_CHOICES if self.audio_selectable else {},
+            "audio_feed": (None if self.feed is None else
+                           {"name": self.feed.name, "online": self.feed.audio_ok,
+                            "error": self.feed.audio_error}),
             "audio_feeds": [
                 {"name": a.name, "online": a.audio_ok, "error": a.audio_error}
                 for a in self.extra_audio
@@ -909,6 +959,46 @@ class Switcher:
             self.loop.run()
         finally:
             self.pipeline.set_state(Gst.State.NULL)
+
+    def _new_feed(self, choice):
+        device = {"hdmi": self.cfg.get("hdmi_audio_device", "hw:CARD=rockchiphdmiin")}.get(choice, choice)
+        name = AUDIO_CHOICES.get(choice, choice)
+        src = Source(self._next_audio_index, {"name": name, "device": device})
+        self._next_audio_index += 1
+        src.choice = choice
+        return src
+
+    def select_audio(self, choice):
+        """Swap the single audio feed (must run on the GLib main loop).
+
+        Make-before-break: the new feed is brought up and the old one is
+        dropped as soon as the new one delivers sound (or after
+        HANDOVER_SECONDS), so there is never more than one feed for long
+        and normally no gap.
+        """
+        if not self.audio_selectable or choice not in AUDIO_CHOICES:
+            return False
+        if self.feed is not None and getattr(self.feed, "choice", None) == choice:
+            return True
+        old, new = self.feed, self._new_feed(choice)
+        self.feed, self.audio_source = new, choice
+        new.replaces = old
+        self.extra_audio.append(new)
+        save_state({"audio_source": choice})
+        log(f"audio -> {new.name}")
+        self._attach_audio(new, "extra")
+        if old is not None:
+            GLib.timeout_add(int(HANDOVER_SECONDS * 1000), lambda: (self._retire(old), False)[1])
+        return True
+
+    def _retire(self, src):
+        """Remove an audio feed for good (it was replaced)."""
+        if getattr(src, "retired", False):
+            return
+        src.retired = True
+        self._detach(src, "audio")
+        if src in self.extra_audio:
+            self.extra_audio.remove(src)
 
     def _scan_cameras(self):
         """Add a button for each newly plugged-in USB camera (auto mode)."""
@@ -999,6 +1089,9 @@ def make_handler(sw):
                     return self._send(400, {"error": "cam (1..N) required"})
                 tr = {"/api/cut": "cut", "/api/fade": "fade"}.get(path, p.get("transition"))
                 ok = sw.call_in_main(sw.switch, cam, tr, p.get("duration_ms"))
+                return self._send(200 if ok else 400, sw.state())
+            if path == "/api/audio":
+                ok = sw.call_in_main(sw.select_audio, p.get("source", ""))
                 return self._send(200 if ok else 400, sw.state())
             if path == "/api/settings":
                 def apply():
