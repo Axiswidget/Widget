@@ -51,10 +51,10 @@ Then:
 | Camera field | Meaning |
 |---|---|
 | `name` | Label on the button |
-| `type` | `v4l2` for raw capture such as the Rock 5 HDMI-in. `mjpeg` for most cheap USB capture cards and webcams, decoded in hardware with `mppjpegdec` when it is available. `test` for a test pattern. `custom` for any GStreamer source fragment in `"pipeline"` |
+| `type` | **`usb` for USB cameras in webcam mode** (OM-1, DJI Pocket, webcams, capture cards). It asks the camera which modes it supports and picks the best one: output size and frame rate if offered, MJPEG over raw, and H.264 as a fallback. The choice is logged. `v4l2` for raw capture such as the Rock 5 HDMI-in. `mjpeg` for most cheap USB capture cards and webcams, decoded in hardware with `mppjpegdec` when it is available. `test` for a test pattern. `custom` for any GStreamer source fragment in `"pipeline"` |
 | `device` | Video device. **For USB devices, use the `/dev/v4l/by-id/...` path.** `/dev/videoN` numbers change between boots |
 | `width`/`height`/`fps` | Mode to request from the camera (optional). The switcher scales every camera to `output` |
-| `audio` | ALSA device for this camera's sound (optional). List devices with `arecord -l`; `hw:CARD=<name>` uses the name in brackets |
+| `audio` | Sound for this camera (optional). `"auto"` finds the USB camera's own microphone or audio input. Otherwise give an ALSA device: run `arecord -l`, then use `hw:CARD=<name>` with the name in brackets |
 | `audio_volume` | 0.0–2.0, default 1.0 |
 
 **Audio.** With `"audio_follows_video": true`, you hear the audio of whichever camera is live, crossfaded with the picture. If you use a single mic for everything instead, leave `audio` off the cameras and add it as an always-on source:
@@ -72,9 +72,23 @@ Then:
   "pipeline": "srtsrc uri=srt://:4001?mode=listener ! tsdemux ! h264parse ! mppvideodec" }
 ```
 
+## Example: OM-1 + DJI Pocket over USB (+ optional HDMI)
+
+`config.example.json` is set up for this. Each camera becomes a button: 1 = OM-1, 2 = Pocket, 3 = HDMI. Any camera that isn't connected just shows as offline until it is.
+
+1. Put both cameras in **USB webcam / USB streaming mode**. When you plug in the USB cable, each camera asks which USB mode to use; pick the webcam or streaming option (the wording varies by model and firmware). Mass-storage or charging-only modes don't provide video.
+2. On the BELABOX, run `ls /dev/v4l/by-id/`. Each camera has an entry ending in `-video-index0`. Copy those paths into `device`. Unlike `/dev/videoN`, they don't change when you replug.
+3. Leave `"audio": "auto"`. Each camera's sound is then matched to it automatically and follows the picture when you switch.
+4. Keep the output at **1080p30**. Cameras in USB webcam mode generally deliver at most 1080p, so a 4K output would only upscale them and use more CPU and bitrate. Use 4K only if your main camera comes in over HDMI at 4K.
+5. If you don't use the HDMI input, delete its entry.
+
+Check the log (`journalctl -u belaswitch -f`). For each camera you should see a line like `USB mode: MJPEG width=1920,height=1080,framerate=30/1`, followed by `input ...`.
+
+**USB power and bandwidth:** plug the cameras into the Rock 5T's USB 3 ports, or a powered hub. Long streams in webcam mode drain camera batteries, so use USB power or a dummy battery if your camera supports it.
+
 ## 4K 30 fps
 
-The switcher can mix and stream in 4K. Set `"output": { "width": 3840, "height": 2160, "fps": 30 }`; this is already the default in `config.example.json`. belacoder then hardware-encodes the 4K mix, just like BELABOX's stock `h265_hdmi_4k_2160p30` pipeline.
+The switcher can mix and stream in 4K. Set `"output": { "width": 3840, "height": 2160, "fps": 30 }`. belacoder then hardware-encodes the 4K mix, just like BELABOX's stock `h265_hdmi_4k_2160p30` pipeline.
 
 At 4K, the important difference from stock BELABOX is where the work happens. BELABOX on its own sends the HDMI feed straight to the hardware encoder. The switcher has to mix the cameras *before* the encoder, so every camera is processed by the CPU. That work is nearly free when a camera already delivers **4K NV12 at 30 fps**. It gets expensive when a camera needs converting or scaling.
 

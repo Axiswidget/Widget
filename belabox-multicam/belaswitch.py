@@ -91,6 +91,71 @@ def describe_caps(caps):
     return w, h, st.get_value("format"), f"{w}x{h} {st.get_value('format')} @{fps}"
 
 
+class NotReady(Exception):
+    """A camera is plugged in but can't be used yet; keep retrying."""
+
+
+def pick_usb_mode(device_caps, out_w, out_h, fps):
+    """Choose the best capture mode a USB camera offers.
+
+    Prefers the output size (or the largest standard size below it), the
+    output frame rate, and MJPEG over raw (raw 1080p doesn't fit through
+    USB 2, and MJPEG is decoded in hardware). Returns (kind, caps_extra)
+    where kind is "mjpeg", "v4l2" or "h264", or None if nothing usable is offered.
+    """
+    sizes = [(out_w, out_h)] + [wh for wh in ((3840, 2160), (2560, 1440), (1920, 1080),
+                                             (1280, 720), (640, 360), (640, 480))
+                                if wh[0] * wh[1] < out_w * out_h]
+    kinds = (("mjpeg", "image/jpeg"), ("v4l2", "video/x-raw"), ("h264", "video/x-h264"))
+    for w, h in sizes:
+        for rate in (f",framerate={fps}/1", ""):
+            for kind, media in kinds:
+                extra = f",width={w},height={h}{rate}"
+                if device_caps.can_intersect(Gst.Caps.from_string(media + extra)):
+                    return kind, extra
+    for kind, media in kinds:
+        if device_caps.can_intersect(Gst.Caps.from_string(media)):
+            return kind, ""
+    return None
+
+
+def usb_audio_for_video(video_device, sysfs="/sys"):
+    """Find the ALSA card on the same USB device as a V4L2 camera.
+
+    A USB webcam shows up as one USB device with a video interface and an
+    audio interface; both hang off the same parent in sysfs.
+    Returns "hw:CARD=<id>" or None.
+    """
+    try:
+        node = os.path.basename(os.path.realpath(video_device))        # videoN
+        vif = os.path.realpath(os.path.join(sysfs, "class/video4linux", node, "device"))
+        usb_dev = os.path.dirname(vif)
+        sound = os.path.join(sysfs, "class/sound")
+        for card in sorted(os.listdir(sound)):
+            if not (card.startswith("card") and card[4:].isdigit()):
+                continue
+            aif = os.path.realpath(os.path.join(sound, card, "device"))
+            if os.path.dirname(aif) == usb_dev:
+                with open(os.path.join(sound, card, "id")) as f:
+                    return f"hw:CARD={f.read().strip()}"
+    except OSError:
+        pass
+    return None
+
+
+def probe_device_caps(device):
+    src = Gst.ElementFactory.make("v4l2src", None)
+    if src is None:
+        return None
+    src.set_property("device", device)
+    try:
+        if src.set_state(Gst.State.READY) == Gst.StateChangeReturn.FAILURE:
+            return None
+        return src.get_static_pad("src").query_caps(None)
+    finally:
+        src.set_state(Gst.State.NULL)
+
+
 def gst_quote(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -307,6 +372,18 @@ class Switcher:
         if sfps:
             caps_extra += f",framerate={int(sfps)}/1"
 
+        if kind == "usb":
+            # Ask the camera what it can do and pick the best mode.
+            caps = probe_device_caps(dev)
+            choice = pick_usb_mode(caps, self.w, self.h, self.fps) if caps else None
+            if choice is None:
+                raise NotReady("no video mode offered - is the camera in webcam/USB streaming mode?")
+            kind, caps_extra = choice
+            if choice != getattr(s, "usb_mode", None):
+                s.usb_mode = choice
+                log(f"[{s.name}] USB mode: {dict(mjpeg='MJPEG', v4l2='raw', h264='H.264')[kind]} "
+                    f"{caps_extra.lstrip(',')}")
+
         if kind == "test":
             pattern = spec.get("pattern", "smpte")
             return (f"videotestsrc is-live=true pattern={pattern} ! "
@@ -325,6 +402,11 @@ class Switcher:
                 dec = "jpegdec"
             return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! image/jpeg{caps_extra} ! "
                     f"queue max-size-buffers=2 leaky=downstream ! {dec}")
+        if kind == "h264":
+            dec = ("mppvideodec" if has_element("mppvideodec")
+                   else "avdec_h264" if has_element("avdec_h264") else "decodebin")
+            return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! video/x-h264{caps_extra} ! "
+                    f"h264parse ! queue max-size-buffers=4 leaky=downstream ! {dec}")
         if kind == "v4l2":
             return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! video/x-raw{caps_extra} ! "
                     "queue max-size-buffers=2 leaky=downstream")
@@ -390,7 +472,7 @@ class Switcher:
     def _attach_video(self, s):
         s.retry_pending["video"] = False
         dev = s.device
-        if s.spec.get("type", "v4l2") in ("v4l2", "mjpeg") and dev and not os.path.exists(dev):
+        if s.spec.get("type", "v4l2") in ("v4l2", "mjpeg", "usb") and dev and not os.path.exists(dev):
             if not s.failing["video"]:
                 log(f"[{s.name}] waiting for {dev}")
             s.failing["video"] = True
@@ -399,6 +481,13 @@ class Switcher:
             return False
         try:
             b = self._make_video_bin(s)
+        except NotReady as e:
+            if not s.failing["video"]:
+                log(f"[{s.name}] waiting: {e}")
+            s.failing["video"] = True
+            s.error = str(e)
+            self._schedule_retry(s, "video")
+            return False
         except (GLib.Error, ValueError, KeyError) as e:
             s.error = f"bad camera config: {e}"
             log(f"[{s.name}] {s.error}")
@@ -418,6 +507,15 @@ class Switcher:
         device = s.spec.get("audio") if tag == "aud" else s.spec.get("device")
         if not device:
             return False
+        if device == "auto":
+            device = usb_audio_for_video(s.device or "")
+            if not device:
+                if not s.failing["audio"]:
+                    log(f"[{s.name}] waiting for the camera's USB audio")
+                s.failing["audio"] = True
+                s.audio_error = "no USB audio found for this camera"
+                self._schedule_retry(s, "audio")
+                return False
         try:
             b = self._make_audio_bin(s, device, tag)
         except GLib.Error as e:
