@@ -108,7 +108,8 @@ def pick_usb_mode(device_caps, out_w, out_h, fps):
                                 if wh[0] * wh[1] < out_w * out_h]
     kinds = (("mjpeg", "image/jpeg"), ("v4l2", "video/x-raw"), ("h264", "video/x-h264"))
     for w, h in sizes:
-        for rate in (f",framerate={fps}/1", ""):
+        # exact rate, then near it (29.97 for 30), then whatever is offered
+        for rate in (f",framerate={fps}/1", f",framerate=[{fps - 1}/1,{fps + 1}/1]", ""):
             for kind, media in kinds:
                 extra = f",width={w},height={h}{rate}"
                 if device_caps.can_intersect(Gst.Caps.from_string(media + extra)):
@@ -391,15 +392,9 @@ class Switcher:
                     f"textoverlay text={gst_quote(s.name)} font-desc=\"Sans Bold 48\" "
                     "valignment=bottom halignment=left shaded-background=true")
         if kind == "mjpeg":
-            if has_element("mppjpegdec"):
-                dec = "mppjpegdec"
-                # The Rockchip decoder can scale and convert with the RGA
-                # hardware block, which keeps a 1080p camera in a 4K mix
-                # off the CPU.
-                if all(has_prop("mppjpegdec", p) for p in ("width", "height", "format")):
-                    dec += f" width={self.w} height={self.h} format=NV12"
-            else:
-                dec = "jpegdec"
+            # mppjpegdec is the Rockchip hardware decoder; its RGA scaling is
+            # switched on in _tune_decoder() once the bin exists.
+            dec = "mppjpegdec name=dec" if has_element("mppjpegdec") else "jpegdec"
             return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! image/jpeg{caps_extra} ! "
                     f"queue max-size-buffers=2 leaky=downstream ! {dec}")
         if kind == "h264":
@@ -431,6 +426,7 @@ class Switcher:
             desc += "t. ! " + self._preview_tail("preview")
         b = Gst.parse_bin_from_description(desc, False)
         b.set_name(f"cam{s.index}")
+        self._tune_decoder(b.get_by_name("dec"), s)
         out = b.get_by_name("out")
         b.add_pad(Gst.GhostPad.new("src", out.get_static_pad("src")))
         if self.previews:
@@ -438,6 +434,23 @@ class Switcher:
         b.get_by_name("rate").get_static_pad("sink").add_probe(
             Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_input_caps, s)
         return b
+
+    def _tune_decoder(self, dec, s):
+        """Let the Rockchip MJPEG decoder scale to the output size in hardware.
+
+        Done property by property and never fatal: if this BELABOX build's
+        decoder lacks an option, the camera still works and the CPU scales.
+        """
+        if dec is None:
+            return
+        try:
+            if dec.find_property("width") and dec.find_property("height"):
+                dec.set_property("width", self.w)
+                dec.set_property("height", self.h)
+            if dec.find_property("format"):
+                Gst.util_set_object_arg(dec, "format", "NV12")
+        except (TypeError, ValueError) as e:
+            log(f"[{s.name}] hardware scaling not available ({e}); using CPU")
 
     def _on_input_caps(self, pad, info, s):
         ev = info.get_event()

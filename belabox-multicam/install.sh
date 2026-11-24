@@ -6,8 +6,13 @@ cd "$(dirname "$0")"
 
 if [ "$(id -u)" != 0 ]; then echo "Please run with sudo"; exit 1; fi
 
-echo "== Installing Python GStreamer bindings"
-apt-get install -y --no-install-recommends python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+echo "== Checking Python GStreamer bindings"
+if ! python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst" 2>/dev/null; then
+  apt-get install -y --no-install-recommends python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 || {
+    echo "ERROR: could not install python3-gi / gir1.2-gstreamer-1.0. Connect the BELABOX to the internet and re-run."
+    exit 1
+  }
+fi
 
 for el in compositor audiomixer shmsink shmsrc jpegenc v4l2src alsasrc mpph265enc; do
   if ! gst-inspect-1.0 "$el" >/dev/null 2>&1; then
