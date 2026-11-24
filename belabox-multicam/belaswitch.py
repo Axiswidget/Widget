@@ -252,6 +252,7 @@ def describe_caps(caps):
 
 BY_ID_DIR = "/dev/v4l/by-id"
 HDMI_DEVICE = "/dev/hdmirx"      # the Rock 5's HDMI input (BELABOX's udev name)
+SYSFS_ROOT, DEV_ROOT = "/sys", "/dev"   # overridable for tests
 
 
 def friendly_camera_name(by_id_path):
@@ -270,6 +271,61 @@ def friendly_camera_name(by_id_path):
 def find_usb_cameras(by_id_dir=BY_ID_DIR):
     """Every USB camera's main video node, in a stable order."""
     return sorted(glob.glob(os.path.join(by_id_dir, "*-video-index0")))
+
+
+def _read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def find_cameras(sysfs="/sys", dev="/dev"):
+    """Every connected camera, whatever it is: [{"path", "kind", "name"}].
+
+    Looks at *all* video devices, not just the ones with a /dev/v4l/by-id
+    name, so capture cards without a serial number are found too:
+
+    * "hdmi": the board's HDMI input (BELABOX's /dev/hdmirx, or any non-USB
+      video device whose driver calls itself HDMI).
+    * "usb":  each USB video device's main node (V4L2 index 0; the other
+      nodes of a UVC camera are metadata). Named by its stable
+      /dev/v4l/by-id path if it has one, else by-path (the USB port), else
+      /dev/videoN.
+
+    The SoC's own video blocks (ISP, RGA scaler, hardware codecs...) are
+    platform devices, not USB or HDMI, so they never become buttons.
+    """
+    nodes = sorted(glob.glob(os.path.join(sysfs, "class/video4linux/video*")),
+                   key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
+    links = {}
+    for d in ("v4l/by-path", "v4l/by-id"):          # by-id wins: set last
+        for l in glob.glob(os.path.join(dev, d, "*")):
+            links[os.path.realpath(l)] = l
+    found, hdmi_nodes = [], set()
+    hdmirx = os.path.join(dev, "hdmirx")
+    if os.path.exists(hdmirx):
+        found.append({"path": hdmirx, "kind": "hdmi", "name": "HDMI"})
+        hdmi_nodes.add(os.path.realpath(hdmirx))
+    for node in nodes:
+        n = os.path.basename(node)
+        devnode = os.path.join(dev, n)
+        name = _read(os.path.join(node, "name"))
+        index = _read(os.path.join(node, "index"), "0")
+        bus = os.path.realpath(os.path.join(node, "device"))
+        if "/usb" in bus:
+            if index != "0":
+                continue                         # metadata node of a UVC camera
+            path = links.get(os.path.realpath(devnode), devnode)
+            label = (friendly_camera_name(path) if "/by-id/" in path
+                     else (name.split(":")[0].strip() or "USB camera"))
+            found.append({"path": path, "kind": "usb", "name": label})
+        elif (re.search(r"hdmi", name, re.I) and index == "0"
+              and os.path.realpath(devnode) not in hdmi_nodes and not hdmi_nodes):
+            found.append({"path": devnode, "kind": "hdmi", "name": "HDMI"})
+            hdmi_nodes.add(os.path.realpath(devnode))
+    return found
 
 
 class NotReady(Exception):
@@ -1309,24 +1365,42 @@ class Switcher:
         return True
 
     def _scan_cameras(self):
-        """Add a button for the HDMI input and each USB camera (auto mode)."""
+        """Give every connected camera a button: HDMI, USB, anything (auto mode).
+
+        Runs every few seconds, so cameras plugged in later appear by
+        themselves. A camera that is unplugged keeps its button ("waiting")
+        and comes back on the same button when it is plugged in again.
+        """
         known = {s.device for s in self.sources}
         found = []
-        if os.path.exists(HDMI_DEVICE):
-            # The HDMI input always exists on a Rock 5; it shows "waiting"
-            # until a camera with an HDMI signal is connected.
-            spec = {"name": "HDMI", "type": "v4l2", "device": HDMI_DEVICE}
-            if self.audio_source == "camera":
-                spec["audio"] = self.cfg.get("hdmi_audio_device", "hw:CARD=rockchiphdmiin")
-            found.append((HDMI_DEVICE, spec))
-        for path in find_usb_cameras():
-            spec = {"name": friendly_camera_name(path), "type": "usb", "device": path}
-            if self.audio_source == "camera":
-                spec["audio"] = "auto"
-            found.append((path, spec))
-        for path, spec in found:
-            if path in known:
+        for cam in find_cameras(SYSFS_ROOT, DEV_ROOT):
+            path = cam["path"]
+            if cam["kind"] == "hdmi":
+                # The HDMI input shows "waiting" until it has a signal.
+                spec = {"name": "HDMI", "type": "v4l2", "device": path}
+                if self.audio_source == "camera":
+                    spec["audio"] = self.cfg.get("hdmi_audio_device", "hw:CARD=rockchiphdmiin")
+            else:
+                spec = {"name": cam["name"], "type": "usb", "device": path}
+                if self.audio_source == "camera":
+                    spec["audio"] = "auto"
+            found.append((path, spec, cam["kind"]))
+        # Physical devices already on a button (only ones present right now:
+        # an unplugged camera's old /dev/videoN may be reused by a new one).
+        live_real = {os.path.realpath(s.device) for s in self.sources
+                     if s.device and os.path.exists(s.device)}
+        for path, spec, kind in found:
+            if path in known or os.path.realpath(path) in live_real:
                 continue
+            # A USB camera seen only as a bare /dev/videoN may have been
+            # plugged in a moment ago, before udev made its stable by-id
+            # name: wait for it. (The HDMI input never needs to wait.)
+            if kind == "usb" and re.fullmatch(r"video\d+", os.path.basename(path)):
+                try:
+                    if time.time() - os.stat(path).st_ctime < 5:
+                        continue
+                except OSError:
+                    continue
             s = Source(len(self.sources), spec)
             self.sources.append(s)
             log(f"[{s.name}] found camera {len(self.sources)}: {path}")

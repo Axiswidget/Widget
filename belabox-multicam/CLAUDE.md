@@ -29,7 +29,11 @@ This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has app
 
 **Zero-config install.** The installer writes `"cameras": "auto"` and `"audio_source": "usb"`.
 
-* Auto mode gives the Rock 5's HDMI input (`/dev/hdmirx`, when present) and every `/dev/v4l/by-id/*-video-index0` device their own buttons, including cameras plugged in later. HDMI shows "waiting" until it has a signal. Like BELABOX's stock HDMI pipelines, HDMI frames flagged DROPPABLE (damaged) are dropped.
+* **Every connected camera is detected (owner requirement).** `find_cameras()` walks *all* `/sys/class/video4linux` nodes:
+  * the HDMI input, via `/dev/hdmirx` or any non-USB node whose driver calls itself HDMI, is always button 1;
+  * every USB video device's index-0 node gets a button, named by its by-id path, else by-path (capture cards without a serial number), else `/dev/videoN`;
+  * the SoC's own platform blocks (ISP, CIF, codecs) are never buttons.
+  The scan runs every 3 s. Unplugged cameras keep their button ("waiting") and return to it. Two names for the same physical device never make two buttons. A bare `/dev/videoN` USB node waits 5 s for udev's stable name. HDMI shows "waiting" until it has a signal, and frames flagged DROPPABLE are dropped, as in BELABOX's stock pipelines.
 * `"type": "usb"` lists the camera's modes (`list_modes`). In Auto mode (`pick_from_modes`) it prefers: the output size (or the next size down); then the output frame rate, then an exact multiple (60 for 30), then near rates (29.97); then RAW (uncompressed) over MJPEG over H.264.
 
 **Quality (v1.3).**
