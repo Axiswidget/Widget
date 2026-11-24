@@ -32,6 +32,13 @@ You need the BELABOX connected to the internet, and a laptop or phone on the sam
 
 **Locked version (v1.0).** The design is frozen as v1.0 (see `CLAUDE.md`). The version you install is printed by `git log --oneline -1`. If later changes ever need undoing, `git checkout v1.0`, or the v1.0 commit listed in `CLAUDE.md`, then `sudo ./install.sh` puts it back.
 
+If the BELABOX says `git: command not found`, download it this way instead (same files):
+```sh
+curl -fsSL https://github.com/Axiswidget/Widget/archive/refs/heads/claude/rock5t-multicam-switcher-rpbzrz.tar.gz | tar xz
+cd Widget-claude-rock5t-multicam-switcher-rpbzrz/belabox-multicam
+sudo ./install.sh
+```
+
 There's no config to edit. Cameras are found automatically. To update later, run `cd Widget && git pull && cd belabox-multicam && sudo ./install.sh`.
 
 ## Install

@@ -56,12 +56,17 @@ if systemctl list-unit-files | grep -q '^belaUI.service'; then
   systemctl restart belaUI
 fi
 
-IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+IP=$(hostname -I 2>/dev/null | awk '{print $1}') || IP=""
 echo
 echo "Done."
-TSIP=$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1)
+TSIP=""
+if command -v tailscale >/dev/null 2>&1; then
+  TSIP=$(tailscale ip -4 2>/dev/null | head -n1) || TSIP=""
+fi
 echo "  1. Switcher control page:  http://${IP:-<belabox-ip>}:8181/"
-[ -n "$TSIP" ] && echo "     over Tailscale:         http://${TSIP}:8181/   (low-data previews)"
+if [ -n "$TSIP" ]; then
+  echo "     over Tailscale:         http://${TSIP}:8181/   (low-data previews)"
+fi
 echo "  2. Plug in your USB cameras and put them in webcam mode - they appear as buttons."
 echo "  3. In belaUI, choose the pipeline 'custom/multicam_switcher' and start streaming."
 echo "  Logs: journalctl -u belaswitch -f"

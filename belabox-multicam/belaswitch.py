@@ -352,7 +352,17 @@ def belacoder_pipeline(cfg):
 def find_pipelines_dir(cfg):
     if cfg.get("belacoder_pipelines_dir"):
         return cfg["belacoder_pipelines_dir"]
-    candidates = ["/opt/belaUI/setup.json"]
+    candidates = []
+    # belaUI reads setup.json from its systemd WorkingDirectory; ask systemd
+    # where that is rather than assuming the default install location.
+    try:
+        wd = subprocess.run(["systemctl", "show", "-p", "WorkingDirectory", "--value", "belaUI"],
+                            capture_output=True, text=True, timeout=5).stdout.strip()
+        if wd:
+            candidates.append(os.path.join(wd, "setup.json"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    candidates += ["/opt/belaUI/setup.json", "/root/belaUI/setup.json"]
     candidates += [f"/home/{u}/belaUI/setup.json" for u in _listdir("/home")]
     for setup_path in candidates:
         try:
