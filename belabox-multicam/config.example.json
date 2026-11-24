@@ -1,0 +1,27 @@
+{
+  "output": { "width": 1920, "height": 1080, "fps": 30 },
+
+  "transition": { "type": "fade", "duration_ms": 600 },
+  "audio_follows_video": true,
+  "previews": true,
+  "web": { "host": "0.0.0.0", "port": 8181 },
+
+  "cameras": [
+    {
+      "name": "HDMI",
+      "type": "v4l2",
+      "device": "/dev/hdmirx",
+      "audio": "hw:CARD=rockchiphdmiin"
+    },
+    {
+      "name": "USB cam",
+      "type": "mjpeg",
+      "device": "/dev/v4l/by-id/usb-YOUR_CAPTURE_CARD-video-index0",
+      "width": 1920, "height": 1080, "fps": 30,
+      "audio": "hw:CARD=MS2109",
+      "audio_volume": 1.0
+    }
+  ],
+
+  "extra_audio": []
+}

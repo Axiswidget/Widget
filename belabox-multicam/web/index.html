@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0f12">
+<title>Multicam Switcher</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #171a1f; --line: #2a2f37; --text: #e8eaed;
+    --muted: #8b929c; --live: #e5372b; --next: #2fbf71; --accent: #3b82f6;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 12px 16px 32px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
+  .pill { font-size: 12px; color: var(--muted); border: 1px solid var(--line);
+          border-radius: 999px; padding: 3px 10px; }
+  .pill.err { color: #ffb4ab; border-color: #7a2d27; }
+
+  .program { position: relative; background: #000; border-radius: 10px; overflow: hidden;
+             aspect-ratio: 16 / 9; border: 2px solid var(--live);
+             width: min(100%, 44vh * 16 / 9); margin: 0 auto; }
+  .program img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .tag { position: absolute; top: 8px; left: 8px; background: var(--live); color: #fff;
+         font-size: 12px; font-weight: 700; letter-spacing: .06em; padding: 2px 8px; border-radius: 4px; }
+
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { background: var(--panel); color: var(--text); border: 0; padding: 10px 18px;
+                font: inherit; font-weight: 600; cursor: pointer; min-height: 44px; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  label.dur { display: flex; align-items: center; gap: 8px; color: var(--muted); flex: 1; min-width: 220px; }
+  label.dur input { flex: 1; accent-color: var(--accent); }
+  label.dur output { color: var(--text); font-variant-numeric: tabular-nums; width: 4.2em; text-align: right; }
+
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .cam { position: relative; background: var(--panel); border: 3px solid var(--line); border-radius: 10px;
+         overflow: hidden; cursor: pointer; padding: 0; color: inherit; font: inherit; text-align: left;
+         transition: border-color .15s, transform .05s; }
+  .cam:active { transform: scale(.985); }
+  .cam.live { border-color: var(--live); }
+  .cam .thumb { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .cam .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cam .thumb span { position: absolute; inset: 0; display: grid; place-items: center;
+                     color: var(--muted); font-size: 13px; padding: 8px; text-align: center; }
+  .cam .thumb span:empty { display: none; }
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .cam .bar { padding: 6px 8px; }
+    .cam .st { display: none; }
+    .cam .st.off { display: inline; }
+  }
+  .cam .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+  .cam .num { background: var(--line); border-radius: 5px; padding: 0 7px; font-weight: 700;
+              font-variant-numeric: tabular-nums; }
+  .cam.live .num { background: var(--live); color: #fff; }
+  .cam .name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cam .st { font-size: 12px; color: var(--muted); }
+  .cam .st.off { color: #ffb4ab; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 16px; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Multicam Switcher</h1>
+    <span class="pill" id="out">…</span>
+    <span class="pill" id="conn">connecting</span>
+  </header>
+
+  <div class="program" id="programBox">
+    <img id="program" alt="Programme output">
+    <span class="tag">LIVE</span>
+  </div>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Transition">
+      <button id="tFade" type="button">Fade</button>
+      <button id="tCut" type="button">Cut</button>
+    </div>
+    <label class="dur">Fade
+      <input id="dur" type="range" min="100" max="3000" step="50">
+      <output id="durVal"></output>
+    </label>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <p class="hint">Tap a camera to take it live. Keys <kbd>1</kbd>–<kbd>9</kbd> switch with the selected
+    transition; hold <kbd>Shift</kbd> for a hard cut.</p>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null, previews = true, durTimer = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : {});
+  const s = await r.json();
+  if (s && s.cameras) render(s);
+  return s;
+}
+
+function render(s) {
+  state = s; previews = s.previews;
+  $('out').textContent = s.output;
+  $('tFade').classList.toggle('on', s.transition === 'fade');
+  $('tCut').classList.toggle('on', s.transition === 'cut');
+  if (document.activeElement !== $('dur')) $('dur').value = s.duration_ms;
+  $('durVal').textContent = (s.duration_ms / 1000).toFixed(2) + ' s';
+  $('programBox').style.display = previews ? '' : 'none';
+
+  const grid = $('grid');
+  if (grid.children.length !== s.cameras.length) {
+    grid.innerHTML = '';
+    s.cameras.forEach((c, i) => {
+      const b = document.createElement('button');
+      b.className = 'cam'; b.type = 'button';
+      b.innerHTML = `<div class="thumb"><img alt=""><span></span></div>
+        <div class="bar"><span class="num">${i + 1}</span><span class="name"></span><span class="st"></span></div>`;
+      b.addEventListener('click', () => take(i + 1));
+      grid.appendChild(b);
+    });
+  }
+  s.cameras.forEach((c, i) => {
+    const el = grid.children[i];
+    el.classList.toggle('live', i === s.active);
+    el.querySelector('.name').textContent = c.name;
+    const st = el.querySelector('.st');
+    st.textContent = !c.online ? 'offline' : (c.audio ? (c.audio_online ? 'video + audio' : 'audio offline') : 'video');
+    st.classList.toggle('off', !c.online || (c.audio && !c.audio_online));
+    const img = el.querySelector('img'), msg = el.querySelector('.thumb span');
+    img.style.display = c.online && previews ? '' : 'none';
+    msg.textContent = c.online ? (previews ? '' : 'preview off') : (c.error || 'waiting for camera…');
+    el.title = [c.error, c.audio_error && 'Audio: ' + c.audio_error].filter(Boolean).join('\n');
+  });
+}
+
+function take(n, transition) { api('/api/switch', { cam: n, transition }); }
+
+$('tFade').onclick = () => api('/api/settings', { transition: 'fade' });
+$('tCut').onclick = () => api('/api/settings', { transition: 'cut' });
+$('dur').oninput = (e) => {
+  $('durVal').textContent = (e.target.value / 1000).toFixed(2) + ' s';
+  clearTimeout(durTimer);
+  durTimer = setTimeout(() => api('/api/settings', { duration_ms: +e.target.value }), 150);
+};
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const m = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
+  if (m) { e.preventDefault(); take(+m[1], e.shiftKey ? 'cut' : undefined); }
+});
+
+// Poll state; refresh thumbnails by swapping in a fully loaded image (no flicker).
+function refreshImg(img, url) {
+  if (img.dataset.loading) return;
+  img.dataset.loading = '1';
+  const next = new Image();
+  next.onload = () => { img.src = next.src; delete img.dataset.loading; };
+  next.onerror = () => { delete img.dataset.loading; };
+  next.src = url + '?t=' + Date.now();
+}
+async function poll() {
+  try {
+    await api('/api/state');
+    $('conn').textContent = 'connected'; $('conn').classList.remove('err');
+    if (previews) {
+      refreshImg($('program'), '/preview/program.jpg');
+      state.cameras.forEach((c, i) => {
+        if (c.online) refreshImg($('grid').children[i].querySelector('img'), `/preview/${i + 1}.jpg`);
+      });
+    }
+  } catch (e) {
+    $('conn').textContent = 'switcher offline'; $('conn').classList.add('err');
+  }
+  setTimeout(poll, document.hidden ? 2000 : 300);
+}
+poll();
+</script>
+</body>
+</html>
