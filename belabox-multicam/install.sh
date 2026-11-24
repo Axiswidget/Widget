@@ -26,20 +26,22 @@ cp belaswitch.py /opt/belaswitch/
 cp web/index.html /opt/belaswitch/web/
 # Default: find USB cameras automatically. A config written by an earlier
 # version of this installer and never edited is upgraded too (with a backup).
-OLD_V11='{
+GEN_1080='{
   "output": { "width": 1920, "height": 1080, "fps": 30 },
   "transition": { "type": "fade", "duration_ms": 600 },
   "cameras": "auto",
   "audio_source": "usb",
-  "web": { "port": 8181, "allow": "tailscale" }
+  "web": { "port": 8181, "allow": "ALLOW" }
 }'
+CUR="$(cat /etc/belaswitch.json 2>/dev/null || true)"
 if [ ! -f /etc/belaswitch.json ] || grep -q "REPLACE-with" /etc/belaswitch.json \
    || { grep -q '"cameras": "auto"' /etc/belaswitch.json && ! grep -q '"allow"' /etc/belaswitch.json; } \
-   || [ "$(cat /etc/belaswitch.json)" = "$OLD_V11" ]; then
+   || [ "$CUR" = "$(echo "$GEN_1080" | sed s/ALLOW/tailscale/)" ] \
+   || [ "$CUR" = "$(echo "$GEN_1080" | sed s/ALLOW/local/)" ]; then
   [ -f /etc/belaswitch.json ] && cp /etc/belaswitch.json /etc/belaswitch.json.bak
   cat > /etc/belaswitch.json <<'JSON'
 {
-  "output": { "width": 1920, "height": 1080, "fps": 30 },
+  "output": { "width": 3840, "height": 2160, "fps": 30 },
   "transition": { "type": "fade", "duration_ms": 600 },
   "cameras": "auto",
   "audio_source": "usb",
@@ -58,6 +60,9 @@ systemctl daemon-reload
 systemctl enable --now belaswitch
 systemctl restart belaswitch
 sleep 3
+
+echo "== Raising belaUI's bitrate limit to 30 Mbps"
+./belaui-bitrate.sh 30000 || echo "   (skipped: see the message above; the switcher works without it)"
 
 # belaUI reads its pipeline list only at startup
 if systemctl list-unit-files | grep -q '^belaUI.service'; then

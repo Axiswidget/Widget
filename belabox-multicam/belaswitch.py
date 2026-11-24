@@ -37,8 +37,32 @@ from gi.repository import GLib, Gst  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIPELINE_NAME = "multicam_switcher"
-VIDEO_SOCKET = "/tmp/belaswitch.video"
-AUDIO_SOCKET = "/tmp/belaswitch.audio"
+# The shared-memory sockets carry the output size in their name: after the
+# output is changed, a belacoder still set up for the old size can't connect
+# to the new picture (which would be garbage at the wrong size). It fails
+# cleanly until the stream is restarted in belaUI with the new pipeline.
+OUTPUT_CHOICES = {          # control page "Output" menu (the owner streams 4K or 1440p)
+    "3840x2160@30": "4K 30",
+    "3840x2160@25": "4K 25",
+    "2560x1440@30": "1440p 30",
+    "2560x1440@25": "1440p 25",
+}
+
+
+def output_key(o):
+    return f"{int(o['width'])}x{int(o['height'])}@{int(o['fps'])}"
+
+
+def parse_output_key(key):
+    wh, fps = key.split("@")
+    w, h = wh.split("x")
+    return {"width": int(w), "height": int(h), "fps": int(fps)}
+
+
+def socket_paths(cfg):
+    o = cfg["output"]
+    tag = f"{int(o['width'])}x{int(o['height'])}p{int(o['fps'])}"
+    return f"/tmp/belaswitch.{tag}.video", f"/tmp/belaswitch.{tag}.audio"
 RETRY_SECONDS = 3
 MAX_RETRY_SECONDS = 30
 # A source that delivers nothing for this long is restarted. Audio must be
@@ -55,7 +79,7 @@ HANDOVER_SECONDS = 1.5      # how long the old feed may overlap the new one
 AUDIO_CAPS = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2"
 
 DEFAULT_CONFIG = {
-    "output": {"width": 1920, "height": 1080, "fps": 30},
+    "output": {"width": 3840, "height": 2160, "fps": 30},
     "transition": {"type": "fade", "duration_ms": 600},
     "audio_follows_video": True,
     "previews": True,
@@ -171,6 +195,13 @@ def load_state():
         return {}
 
 
+def update_state(**changes):
+    """Merge changes into the saved state (audio choice, output, camera modes)."""
+    st = load_state()
+    st.update(changes)
+    save_state(st)
+
+
 def save_state(state):
     try:
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -244,6 +275,85 @@ class NotReady(Exception):
     """A camera is plugged in but can't be used yet; keep retrying."""
 
 
+KIND_MEDIA = {"v4l2": "video/x-raw", "mjpeg": "image/jpeg", "h264": "video/x-h264"}
+KIND_LABEL = {"v4l2": "RAW", "mjpeg": "MJPEG", "h264": "H.264"}   # RAW = uncompressed
+# For picture quality: uncompressed beats MJPEG (no camera-side JPEG
+# blocking) beats H.264.
+KIND_RANK = {"v4l2": 3, "mjpeg": 2, "h264": 1}
+STANDARD_FPS = (60, 50, 30, 25, 24)
+
+
+def _fps_values(txt):
+    """'(fraction)30/1' | '(fraction){ 30/1, 25/1 }' | '(fraction)[ 1/1, 30/1 ]' -> [(n, d)]"""
+    fr = [tuple(map(int, m)) for m in re.findall(r"(\d+)/(\d+)", txt)]
+    if "[" in txt and len(fr) == 2:          # a range: offer the standard rates inside it
+        lo, hi = fr[0][0] / fr[0][1], fr[1][0] / fr[1][1]
+        fr = [(f, 1) for f in STANDARD_FPS if lo <= f <= hi] or [fr[1]]
+    return [f for f in fr if f[0] > 0]
+
+
+def list_modes(caps):
+    """Every discrete capture mode a camera offers, best first.
+
+    Each mode: {"id", "kind", "w", "h", "fps": (n, d), "format", "label"}.
+    """
+    modes, seen = [], set()
+    for struct in caps.to_string().split(";"):
+        media = struct.strip().split(",")[0].strip()
+        kind = {v: k for k, v in KIND_MEDIA.items()}.get(media)
+        w = re.search(r"width=\(int\)(\d+)", struct)
+        h = re.search(r"height=\(int\)(\d+)", struct)
+        fr = re.search(r"framerate=(\(fraction\)(?:\{[^}]*\}|\[[^\]]*\]|[\d/]+))", struct)
+        if not (kind and w and h and fr):
+            continue                     # ranges of sizes etc. are left to "Auto"
+        fmt = re.search(r"format=\(string\)(\w+)", struct)
+        fmt = fmt.group(1) if (fmt and kind == "v4l2") else None
+        for n, d in _fps_values(fr.group(1)):
+            w_, h_ = int(w.group(1)), int(h.group(1))
+            mid = f"{kind}:{w_}x{h_}@{n}/{d}" + (f":{fmt}" if fmt else "")
+            if mid in seen:
+                continue
+            seen.add(mid)
+            fps = n / d
+            label = f"{h_}p{fps:.4g} {KIND_LABEL[kind]}"        # e.g. "2160p30 MJPEG"
+            modes.append({"id": mid, "kind": kind, "w": w_, "h": h_, "fps": (n, d),
+                          "format": fmt, "label": label})
+    modes.sort(key=lambda m: (m["w"] * m["h"], m["fps"][0] / m["fps"][1], KIND_RANK[m["kind"]]),
+               reverse=True)
+    return modes
+
+
+def mode_caps_extra(m):
+    extra = f",width={m['w']},height={m['h']},framerate={m['fps'][0]}/{m['fps'][1]}"
+    if m["format"]:
+        extra += f",format={m['format']}"
+    return extra
+
+
+def pick_from_modes(modes, out_w, out_h, fps):
+    """Auto choice: the output size (or the next size down), the output frame
+    rate (or an exact multiple, which videorate halves cleanly), then the
+    least compressed format."""
+    if not modes:
+        return None
+    sizes = sorted({(m["w"], m["h"]) for m in modes}, key=lambda wh: wh[0] * wh[1], reverse=True)
+    fitting = [wh for wh in sizes if wh[0] <= out_w and wh[1] <= out_h] or [sizes[-1]]
+    w, h = fitting[0]
+
+    def score(m):
+        f = m["fps"][0] / m["fps"][1]
+        if abs(f - fps) < 0.01:
+            cls = 4
+        elif abs(f / fps - round(f / fps)) < 0.01 and f > fps:
+            cls = 3                      # 60 for 30: drop every other frame, exact
+        elif abs(f - fps) <= 1:
+            cls = 2                      # 29.97 for 30: a repeated frame every ~33 s
+        else:
+            cls = 1 if f >= fps else 0
+        return (cls, f if cls <= 1 else 0, KIND_RANK[m["kind"]])
+    return max((m for m in modes if (m["w"], m["h"]) == (w, h)), key=score)
+
+
 def pick_usb_mode(device_caps, out_w, out_h, fps):
     """Choose the best capture mode a USB camera offers.
 
@@ -255,7 +365,7 @@ def pick_usb_mode(device_caps, out_w, out_h, fps):
     sizes = [(out_w, out_h)] + [wh for wh in ((3840, 2160), (2560, 1440), (1920, 1080),
                                              (1280, 720), (640, 360), (640, 480))
                                 if wh[0] * wh[1] < out_w * out_h]
-    kinds = (("mjpeg", "image/jpeg"), ("v4l2", "video/x-raw"), ("h264", "video/x-h264"))
+    kinds = (("v4l2", "video/x-raw"), ("mjpeg", "image/jpeg"), ("h264", "video/x-h264"))
     for w, h in sizes:
         # exact rate, then near it (29.97 for 30), then whatever is offered
         for rate in (f",framerate={fps}/1", f",framerate=[{fps - 1}/1,{fps + 1}/1]", ""):
@@ -350,19 +460,20 @@ def smoothstep(t):
 def belacoder_pipeline(cfg):
     o = cfg["output"]
     w, h, fps = o["width"], o["height"], o["fps"]
+    vsock, asock = socket_paths(cfg)
     gop = int(fps) * 2
     # Element names (ptsfixup, v_delay, a_delay, overlay, venc_bps, appsink)
     # are the ones belacoder looks up; the voaacenc/aacparse fragment is the
     # exact pattern belaUI rewrites when you choose Opus audio.
     return (
-        f"shmsrc socket-path={VIDEO_SOCKET} is-live=true do-timestamp=true !\n"
+        f"shmsrc socket-path={vsock} is-live=true do-timestamp=true !\n"
         f"video/x-raw,format=NV12,width={w},height={h},framerate={fps}/1,pixel-aspect-ratio=1/1 !\n"
         "identity name=ptsfixup signal-handoffs=TRUE !\n"
         "identity name=v_delay signal-handoffs=TRUE ! queue max-size-buffers=3 leaky=downstream !\n"
         "textoverlay text='' valignment=top halignment=right font-desc=\"Monospace, 5\" name=overlay ! queue !\n"
         f"mpph265enc zero-copy-pkt=0 qp-max=51 gop={gop} name=venc_bps !\n"
         "h265parse config-interval=-1 ! queue max-size-time=10000000000 max-size-buffers=1000 max-size-bytes=41943040 ! mux.\n"
-        f"shmsrc socket-path={AUDIO_SOCKET} is-live=true do-timestamp=true ! {AUDIO_CAPS} !\n"
+        f"shmsrc socket-path={asock} is-live=true do-timestamp=true ! {AUDIO_CAPS} !\n"
         "identity name=a_delay signal-handoffs=TRUE ! volume volume=1.0 !\n"
         f"audioconvert ! voaacenc bitrate={int(cfg['audio_bitrate'])} ! aacparse ! queue max-size-time=10000000000 max-size-buffers=1000 ! mux.\n"
         "mpegtsmux name=mux !\n"
@@ -467,6 +578,10 @@ class Switcher:
         self.cfg = cfg
         o = cfg["output"]
         self.w, self.h, self.fps = int(o["width"]), int(o["height"]), int(o["fps"])
+        self.vsock, self.asock = socket_paths(cfg)
+        self.encoder_clients = 0       # belacoder connected to our video socket
+        self.exit_code = 0
+        self.camera_modes = load_state().get("camera_modes", {})   # camera key -> mode id
         self.pw = 320
         self.transition = cfg["transition"].get("type", "fade")
         self.duration_ms = int(cfg["transition"].get("duration_ms", 600))
@@ -516,7 +631,7 @@ class Switcher:
             f"videotestsrc pattern=black is-live=true ! {vcaps} ! queue ! "
             f"compositor name=comp background=black latency=20000000 ! {vcaps} ! tee name=vt "
             "vt. ! queue max-size-buffers=2 leaky=downstream ! "
-            f"shmsink socket-path={VIDEO_SOCKET} shm-size={self.w * self.h * 3 // 2 * 8} "
+            f"shmsink name=vshm socket-path={self.vsock} shm-size={self.w * self.h * 3 // 2 * 8} "
             "wait-for-connection=false sync=false async=false "
         )
         if self.previews:
@@ -524,7 +639,7 @@ class Switcher:
         desc += (
             f" audiotestsrc wave=silence is-live=true ! {AUDIO_CAPS} ! queue ! "
             f"audiomixer name=amix latency=20000000 ! {AUDIO_CAPS} ! queue max-size-time=200000000 leaky=downstream ! "
-            f"shmsink socket-path={AUDIO_SOCKET} shm-size=2000000 wait-for-connection=false sync=false async=false"
+            f"shmsink socket-path={self.asock} shm-size=2000000 wait-for-connection=false sync=false async=false"
         )
         self.pipeline = Gst.parse_launch(desc)
         self.pipeline.set_name("belaswitch")
@@ -538,6 +653,15 @@ class Switcher:
                 el.set_property("ignore-inactive-pads", True)
         if self.previews:
             self._hook_preview(bin_.get_by_name("progpreview"), None)
+        vshm = bin_.get_by_name("vshm")
+
+        def on_client(_el, _fd, delta):
+            self.encoder_clients = max(0, self.encoder_clients + delta)
+            if delta > 0 and load_state().get("output_pending"):
+                update_state(output_pending=False)
+            log("belacoder " + ("connected" if delta > 0 else "disconnected"))
+        vshm.connect("client-connected", on_client, 1)
+        vshm.connect("client-disconnected", on_client, -1)
 
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
@@ -581,17 +705,30 @@ class Switcher:
         if sfps:
             caps_extra += f",framerate={int(sfps)}/1"
 
+        s.capture_size = None
         if kind == "usb":
-            # Ask the camera what it can do and pick the best mode.
+            # Ask the camera what it can do. Use the mode chosen on the
+            # control page if the camera still offers it, else pick the best.
             caps = probe_device_caps(dev)
-            choice = pick_usb_mode(caps, self.w, self.h, self.fps) if caps else None
-            if choice is None:
-                raise NotReady("no video mode offered - is the camera in webcam/USB streaming mode?")
-            kind, caps_extra = choice
-            if choice != getattr(s, "usb_mode", None):
-                s.usb_mode = choice
-                log(f"[{s.name}] USB mode: {dict(mjpeg='MJPEG', v4l2='raw', h264='H.264')[kind]} "
-                    f"{caps_extra.lstrip(',')}")
+            s.modes = list_modes(caps) if caps else []
+            wanted = self.camera_modes.get(self._camera_key(s), "auto")
+            mode = next((m for m in s.modes if m["id"] == wanted), None)
+            if mode is None:
+                mode = pick_from_modes(s.modes, self.w, self.h, self.fps)
+            if mode is not None:
+                kind, caps_extra = mode["kind"], mode_caps_extra(mode)
+                s.capture_size = (mode["w"], mode["h"])
+                label = mode["label"]
+            else:                # camera only describes ranges: fall back
+                choice = pick_usb_mode(caps, self.w, self.h, self.fps) if caps else None
+                if choice is None:
+                    raise NotReady("no video mode offered - is the camera in webcam/USB streaming mode?")
+                kind, caps_extra = choice
+                label = f"{KIND_LABEL[kind]} {caps_extra.lstrip(',')}"
+            s.mode_label = label + ("" if wanted == "auto" else " (chosen)")
+            if s.mode_label != getattr(s, "logged_mode", None):
+                s.logged_mode = s.mode_label
+                log(f"[{s.name}] capture mode: {s.mode_label}")
 
         if kind == "test":
             pattern = spec.get("pattern", "smpte")
@@ -624,10 +761,14 @@ class Switcher:
         # Both are passthrough (free) when the camera already delivers
         # NV12 at the output size; otherwise spread the work over cores.
         threads = f" n-threads={self.threads}" if self.threads > 1 else ""
+        # Picture quality: Catmull-Rom scaling (measured ~60% less aliasing
+        # than the default bilinear when shrinking 4K, and sharper when
+        # enlarging) and no dithering. Both are skipped entirely (bit-exact
+        # passthrough) when the camera already delivers NV12 at the output size.
         desc = (
             f"{self._video_source_desc(s)} ! videorate name=rate ! "
-            f"videoscale add-borders=true{threads if self.scale_threads else ''} ! "
-            f"videoconvert{threads if self.convert_threads else ''} ! {vcaps} ! tee name=t "
+            f"videoscale method=catrom add-borders=true{threads if self.scale_threads else ''} ! "
+            f"videoconvert dither=none{threads if self.convert_threads else ''} ! {vcaps} ! tee name=t "
             "t. ! queue name=out max-size-buffers=3 leaky=downstream "
         )
         if self.previews:
@@ -651,8 +792,10 @@ class Switcher:
         """
         if dec is None:
             return
+        cap = getattr(s, "capture_size", None)
+        shrinking = cap is not None and (cap[0] > self.w or cap[1] > self.h)
         try:
-            if dec.find_property("width") and dec.find_property("height"):
+            if dec.find_property("width") and dec.find_property("height") and not shrinking:
                 dec.set_property("width", self.w)
                 dec.set_property("height", self.h)
             if dec.find_property("format"):
@@ -1015,6 +1158,10 @@ class Switcher:
             "fading": self.fade is not None,
             "previews": self.previews,
             "output": f"{self.w}x{self.h}@{self.fps}",
+            "output_key": output_key(self.cfg["output"]),
+            "output_choices": OUTPUT_CHOICES,
+            "output_pending": bool(load_state().get("output_pending")),
+            "encoder_connected": self.encoder_clients > 0,
             "audio_selectable": self.audio_selectable,
             "audio_source": self.audio_source,
             "audio_choices": AUDIO_CHOICES if self.audio_selectable else {},
@@ -1029,7 +1176,10 @@ class Switcher:
                 {"index": s.index, "name": s.name, "online": s.video_ok,
                  "audio": bool(s.spec.get("audio")), "audio_online": s.audio_ok,
                  "error": s.error, "audio_error": s.audio_error,
-                 "input": s.input, "cpu_work": s.cpu_work}
+                 "input": s.input, "cpu_work": s.cpu_work,
+                 "modes": [{"id": m["id"], "label": m["label"]} for m in getattr(s, "modes", [])],
+                 "mode": self.camera_modes.get(self._camera_key(s), "auto"),
+                 "mode_label": getattr(s, "mode_label", "")}
                 for s in self.sources
             ],
         }
@@ -1037,10 +1187,11 @@ class Switcher:
     # ---------------- run ----------------
 
     def run(self):
-        for p in (VIDEO_SOCKET, AUDIO_SOCKET):
+        # remove sockets left by earlier runs, for any output size
+        for p in glob.glob("/tmp/belaswitch*.video") + glob.glob("/tmp/belaswitch*.audio"):
             try:
                 os.unlink(p)
-            except FileNotFoundError:
+            except OSError:
                 pass
         self.loop = GLib.MainLoop()
         self.pipeline.set_state(Gst.State.PLAYING)
@@ -1054,7 +1205,7 @@ class Switcher:
             log("cameras: auto - every USB camera you plug in gets a button")
             self._scan_cameras()
             GLib.timeout_add_seconds(RETRY_SECONDS, self._scan_cameras)
-        log(f"programme {self.w}x{self.h}@{self.fps} -> {VIDEO_SOCKET}, {AUDIO_SOCKET}")
+        log(f"programme {self.w}x{self.h}@{self.fps} -> {self.vsock}, {self.asock}")
         try:
             self.loop.run()
         finally:
@@ -1084,7 +1235,7 @@ class Switcher:
         self.feed, self.audio_source = new, choice
         new.replaces = old
         self.extra_audio.append(new)
-        save_state({"audio_source": choice})
+        update_state(audio_source=choice)
         log(f"audio -> {new.name}")
         self._attach_audio(new, "extra")
         if old is not None:
@@ -1099,6 +1250,58 @@ class Switcher:
         self._detach(src, "audio")
         if src in self.extra_audio:
             self.extra_audio.remove(src)
+
+    def _camera_key(self, s):
+        """Stable key for remembering a camera's chosen mode."""
+        return s.device or s.name
+
+    def set_camera_mode(self, idx, mode_id):
+        """Choose a camera's capture mode ("auto" = best). Main loop only.
+
+        The camera restarts in the new mode; while it does, its tile (and the
+        programme, if it is live) is black for about a second.
+        """
+        if not 0 <= idx < len(self.sources):
+            return False
+        s = self.sources[idx]
+        if mode_id != "auto" and mode_id not in {m["id"] for m in getattr(s, "modes", [])}:
+            return False
+        key = self._camera_key(s)
+        if mode_id == "auto":
+            self.camera_modes.pop(key, None)
+        else:
+            self.camera_modes[key] = mode_id
+        update_state(camera_modes=self.camera_modes)
+        log(f"[{s.name}] mode -> {mode_id}")
+        if s.vbin is not None:
+            self._detach(s, "video")
+        s.failing["video"] = False
+        # give the old capture a moment to release the device
+        GLib.timeout_add(800, lambda: (self._attach_video(s), False)[1])
+        return True
+
+    def set_output(self, key):
+        """Change the output size/rate. Main loop only.
+
+        Writes the new belacoder pipeline and restarts this service (systemd
+        brings it back in ~2 s). The stream must then be stopped and started
+        in belaUI so belacoder picks up the new size.
+        """
+        if key not in OUTPUT_CHOICES:
+            return False
+        if key == output_key(self.cfg["output"]):
+            return True
+        self.cfg["output"] = parse_output_key(key)
+        update_state(output=key, output_pending=True)
+        write_pipeline_file(self.cfg)
+        log(f"output -> {key}; restarting the switcher")
+        self.exit_code = 75          # non-zero: systemd restarts us
+
+        def restart():
+            self.loop.quit()
+            return False
+        GLib.timeout_add(500, restart)  # let the HTTP reply go out first
+        return True
 
     def _scan_cameras(self):
         """Add a button for each newly plugged-in USB camera (auto mode)."""
@@ -1205,6 +1408,16 @@ def make_handler(sw):
                 tr = {"/api/cut": "cut", "/api/fade": "fade"}.get(path, p.get("transition"))
                 ok = sw.call_in_main(sw.switch, cam, tr, p.get("duration_ms"))
                 return self._send(200 if ok else 400, state())
+            if path == "/api/camera_mode":
+                try:
+                    cam = int(p["cam"]) - 1
+                except (KeyError, ValueError):
+                    return self._send(400, {"error": "cam (1..N) required"})
+                ok = sw.call_in_main(sw.set_camera_mode, cam, str(p.get("mode", "auto")))
+                return self._send(200 if ok else 400, state())
+            if path == "/api/output":
+                ok = sw.call_in_main(sw.set_output, str(p.get("output", "")))
+                return self._send(200 if ok else 400, state())
             if path == "/api/audio":
                 ok = sw.call_in_main(sw.select_audio, p.get("source", ""))
                 return self._send(200 if ok else 400, state())
@@ -1239,6 +1452,9 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    saved_output = load_state().get("output")      # chosen on the control page
+    if saved_output in OUTPUT_CHOICES:
+        cfg["output"] = parse_output_key(saved_output)
     if args.print_pipeline:
         print(belacoder_pipeline(cfg), end="")
         return
@@ -1261,6 +1477,7 @@ def main():
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, stop)
     sw.run()
     httpd.shutdown()
+    return sw.exit_code
 
 
 if __name__ == "__main__":

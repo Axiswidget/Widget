@@ -30,7 +30,7 @@ You need the BELABOX connected to the internet, and a laptop or phone on the sam
 4. **In belaUI**, choose the pipeline **`custom/multicam_switcher`** and press Start.
 5. **On your phone, on the same Wi-Fi or BELABOX hotspot as the box**, open the address the installer printed. It's the same address you use for belaUI, plus **`:8181`**, e.g. `http://192.168.4.1:8181`. Tap a camera to switch. (It also works from anywhere over Tailscale, if the box is on your tailnet.)
 
-**Locked version (v1.2).** The design is frozen (see `CLAUDE.md`). To find the locked commit, run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md`. If later changes ever need undoing, `git checkout <that hash>` followed by `sudo ./install.sh` puts it back.
+**Locked version (v1.3).** The design is frozen (see `CLAUDE.md`). To find the locked commit, run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md`. If later changes ever need undoing, `git checkout <that hash>` followed by `sudo ./install.sh` puts it back.
 
 If the BELABOX says `git: command not found`, download it this way instead (same files):
 ```sh
@@ -114,44 +114,43 @@ A 🎙 pill shows the feed is delivering sound. It turns red ("no sound") if not
 1. Put both cameras in **USB webcam / USB streaming mode**. When you plug in the USB cable, each camera asks which USB mode to use; pick the webcam or streaming option (the wording varies by model and firmware). Mass-storage or charging-only modes don't provide video.
 2. On the BELABOX, run `ls /dev/v4l/by-id/`. Each camera has an entry ending in `-video-index0`. Copy those paths into `device`. Unlike `/dev/videoN`, they don't change when you replug.
 3. Leave `"audio": "auto"`. Each camera's sound is then matched to it automatically and follows the picture when you switch.
-4. Keep the output at **1080p30**. Cameras in USB webcam mode generally deliver at most 1080p, so a 4K output would only upscale them and use more CPU and bitrate. Use 4K only if your main camera comes in over HDMI at 4K.
+4. The output starts at **4K 30**; change it with the **Output** menu. Open each camera's menu to see the modes it really offers over USB. If a camera tops out at 1080p in webcam mode, it's upscaled cleanly but can't show true 4K detail (see *Picture quality*).
 5. If you don't use the HDMI input, delete its entry.
 
 Check the log (`journalctl -u belaswitch -f`). For each camera you should see a line like `USB mode: MJPEG width=1920,height=1080,framerate=30/1`, followed by `input ...`.
 
 **USB power and bandwidth:** plug the cameras into the Rock 5T's USB 3 ports, or a powered hub. Long streams in webcam mode drain camera batteries, so use USB power or a dummy battery if your camera supports it.
 
-## 4K 30 fps
+## Picture quality: output and camera menus
 
-The switcher can mix and stream in 4K. Set `"output": { "width": 3840, "height": 2160, "fps": 30 }`. belacoder then hardware-encodes the 4K mix, just like BELABOX's stock `h265_hdmi_4k_2160p30` pipeline.
+**Output menu** (on the control page): **4K 30** (default), **4K 25**, **1440p 30** or **1440p 25**. Changing it restarts the switcher for a few seconds. Then press **Stop** and **Start** in belaUI so the stream uses the new size. A yellow banner reminds you until belaUI has picked it up, and the **● belaUI streaming** pill shows when it's connected.
 
-At 4K, the important difference from stock BELABOX is where the work happens. BELABOX on its own sends the HDMI feed straight to the hardware encoder. The switcher has to mix the cameras *before* the encoder, so every camera is processed by the CPU. That work is nearly free when a camera already delivers **4K NV12 at 30 fps**. It gets expensive when a camera needs converting or scaling.
+**Camera menus** (under each camera): **Auto**, or a specific mode the camera offers, e.g. `2160p30 MJPEG`, `1080p60 MJPEG`, `1080p30 RAW`. Auto picks:
+1. the output size, or the largest size below it;
+2. the output frame rate, or an exact multiple (60 for 30, halved cleanly), before near rates such as 29.97;
+3. **RAW** (uncompressed) over **MJPEG** over H.264.
 
-Estimates per camera at 4K30. They were measured on a cloud server, and the Rock 5T's cores are roughly 2–4× slower, so treat them as a guide. The 33 ms frame budget at 30 fps is shared by all cameras:
+Your choice is remembered for each camera. Changing a live camera blacks it out for about a second, so the page asks first.
 
-| Camera delivers | CPU work each frame | Verdict |
-|---|---|---|
-| 4K NV12 | none (passthrough) | ✅ ideal |
-| 4K NV16 / NV24 (YUV 4:2:2 / 4:4:4) | chroma convert, ~1 ms | ✅ fine |
-| 4K RGB/BGR | colour convert, ~11 ms here (≈25–40 ms on the Rock 5T) | ❌ likely drops frames |
-| 1080p MJPEG USB card | scaled by the RGA hardware when `mppjpegdec` supports it | ✅ fine |
-| 1080p raw USB/HDMI | software upscale to 4K, ~8 ms here | ⚠️ one is OK, several are not |
-| mixing and fades | ~3–4 ms here | ✅ fine |
+### Artifacts: what is guaranteed and what isn't
 
-**Check what your camera actually delivers.** The log prints one line per camera, and the control page shows each camera's resolution. If a camera costs CPU work, its label turns amber and hovering over it shows what it costs:
+* **The switcher adds no artifacts.** When a camera's mode matches the output, its picture reaches the encoder **bit-exact**. This was tested at 4K: 0 of 8.3 million pixels changed, live and after fades. Fades blend two clean pictures, and the moment a fade ends the picture is bit-exact again.
+* **When scaling is needed** (e.g. a 1080p camera in a 4K output), the switcher uses Catmull-Rom. Measured against the default scaler, it has about 60% less shimmer/moiré when shrinking and is sharper when enlarging. Enlarging can't add detail, though: a 1080p camera looks like 1080p, softly upscaled, and the tile's label says so. For the cleanest 4K, give it a camera mode of **2160p**.
+* **MJPEG** modes are compressed by the camera before the switcher sees them. Choose a **RAW** mode where the camera offers one at the size and rate you want (usually only over USB 3).
+* **The encoder:** belacoder compresses the stream to fit what your modems can carry, and that is where most visible artifacts in a live stream come from. No stream over cellular can promise zero. In motion, 4K30 H.265 usually needs roughly **15–25 Mbps** to look clean (rule of thumb, scene dependent), well above belaUI's normal 12 Mbps cap. That's why the installer raises it to 30 Mbps (below). belacoder still lowers the bitrate automatically whenever the links can't carry it. If your links often can't sustain about 15 Mbps, 1440p will usually look cleaner than 4K at the same bitrate.
 
-```
-[HDMI] input 3840x2160 NV12 @30                    <- good
-[USB]  input 1920x1080 BGR @30 - CPU scaling ..., converting BGR->NV12 every frame (heavy)
-```
+### belaUI bitrate limit: 12 → 30 Mbps
 
-To see what the HDMI input receives, run `v4l2-ctl -d /dev/hdmirx --get-fmt-video`. If it reports RGB, set your camera's HDMI output colour format to **YCbCr / YUV** (often called "HDMI output → YCbCr 4:2:2" or similar) instead of RGB.
+belaUI caps the bitrate slider at 12 Mbps, but belacoder, BELABOX's encoder, accepts up to 30 Mbps. The installer runs `belaui-bitrate.sh`, which raises belaUI's cap to 30 Mbps:
+* It changes exactly two numbers in belaUI and keeps backups (`*.orig`).
+* If your belaUI version looks different, it changes nothing.
+* Run `sudo ./belaui-bitrate.sh --revert` to undo it.
 
-**Tips for 4K multicam**
+**A BELABOX update that replaces belaUI puts the 12 Mbps cap back.** Just run `sudo ./belaui-bitrate.sh` again, or re-run the installer, then reload the belaUI page.
 
-* Keep the extra cameras on **MJPEG USB capture cards**. They are decoded and upscaled in hardware.
-* Set `"previews": false` if you need every last bit of CPU.
-* 4K needs a lot of bitrate. Over bonded cellular at around 6–10 Mbps, 1080p often looks better than 4K. You can still feed in a 4K camera and set the output to 1080p. That costs one software downscale of the 4K camera (~3 ms here) and makes the mixing 4× cheaper.
+### Rock 5T CPU at 4K
+
+A camera that already delivers NV12 at the output size costs almost nothing. Converting or scaling is real work at 4K: the log and the tile tooltip show which cameras need it. Measured per 4K frame on a cloud server (the Rock 5T is roughly 2–4× slower): Catmull-Rom scaling ~5 ms, YUY2/I420→NV12 ~1–2 ms, mixing and fades ~3–4 ms. MJPEG cameras are decoded and enlarged by the Rock 5T's hardware where available.
 
 ## HTTP API (for a Stream Deck, Bitfocus Companion, etc.)
 
@@ -164,6 +163,8 @@ Camera numbers start at 1.
 | `GET /api/switch?cam=2&duration_ms=1500` | Use a one-off fade length |
 | `POST /api/settings` `{"transition":"cut","duration_ms":800}` | Change the defaults |
 | `POST /api/audio?source=usb` / `?source=hdmi` | Choose the audio feed |
+| `POST /api/output?output=3840x2160@30` | Choose the output (`3840x2160@30`, `3840x2160@25`, `2560x1440@30`, `2560x1440@25`) |
+| `POST /api/camera_mode?cam=1&mode=auto` | Choose a camera's capture mode (`auto` or an id from `/api/state`) |
 | `GET /api/state` | Live camera, camera status and settings (JSON) |
 | `GET /preview/program.jpg`, `/preview/1.jpg` … | Preview stills |
 

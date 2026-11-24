@@ -42,9 +42,14 @@
 
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
   .cam { position: relative; background: var(--panel); border: 3px solid var(--line); border-radius: 10px;
-         overflow: hidden; cursor: pointer; padding: 0; color: inherit; font: inherit; text-align: left;
-         transition: border-color .15s, transform .05s; }
-  .cam:active { transform: scale(.985); }
+         overflow: hidden; transition: border-color .15s; }
+  .cam .take { display: block; width: 100%; background: none; border: 0; padding: 0; margin: 0;
+               color: inherit; font: inherit; text-align: left; cursor: pointer; transition: transform .05s; }
+  .cam .take:active { transform: scale(.985); }
+  .cam select.mode { display: block; width: 100%; background: var(--bg); color: var(--muted);
+                     border: 0; border-top: 1px solid var(--line); padding: 8px 8px; font: inherit;
+                     font-size: 12px; cursor: pointer; }
+  .cam select.mode.chosen { color: var(--text); }
   .cam.live { border-color: var(--live); }
   .cam .thumb { position: relative; aspect-ratio: 16 / 9; background: #000; }
   .cam .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -56,6 +61,7 @@
     .cam .bar { padding: 6px 8px; }
     .cam .st { display: none; }
     .cam .st.off { display: inline; }
+    .cam select.mode, label.sel select { font-size: 16px; }   /* stops iOS zooming in */
   }
   .cam .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
   .cam .num { background: var(--line); border-radius: 5px; padding: 0 7px; font-weight: 700;
@@ -65,6 +71,14 @@
   .cam .st { font-size: 12px; color: var(--muted); }
   .cam .st.off { color: #ffb4ab; }
   .cam .st.warn { color: #f5c26b; }
+  label.sel { display: inline-flex; align-items: center; gap: 8px; color: var(--muted);
+               border: 1px solid var(--line); border-radius: 8px; padding: 0 0 0 12px; min-height: 44px; }
+  label.sel select { background: var(--panel); color: var(--text); border: 0; border-left: 1px solid var(--line);
+                     font: inherit; font-weight: 600; padding: 0 12px; align-self: stretch; border-radius: 0 7px 7px 0;
+                     cursor: pointer; }
+  .banner { background: #2b2210; border: 1px solid #6b5426; color: #f5c26b; border-radius: 10px;
+            padding: 10px 14px; margin: 0 0 12px; }
+  .pill.ok { color: #9be3b5; border-color: #24563a; }
   .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px;
            padding: 24px 16px; text-align: center; color: var(--muted); }
   .hint { color: var(--muted); font-size: 13px; margin-top: 16px; }
@@ -77,9 +91,11 @@
     <h1>Multicam Switcher</h1>
     <span class="pill" id="audio" hidden></span>
     <button class="pill btn" id="prevBtn" type="button" title="Live previews use data. Over Tailscale that data shares the stream's cellular uplink."></button>
-    <span class="pill" id="out">…</span>
+    <span class="pill" id="enc" title="Whether belaUI's encoder is taking the switcher's picture">…</span>
     <span class="pill" id="conn">connecting</span>
   </header>
+
+  <p class="banner" id="outBanner" hidden></p>
 
   <div class="program" id="programBox">
     <img id="program" alt="Programme output">
@@ -92,6 +108,7 @@
       <button id="tCut" type="button">Cut</button>
     </div>
     <div class="seg" role="group" aria-label="Audio source" id="audioSel" hidden></div>
+    <label class="sel">Output <select id="outSel" aria-label="Output quality"></select></label>
     <label class="dur">Fade
       <input id="dur" type="range" min="100" max="3000" step="50">
       <output id="durVal"></output>
@@ -103,7 +120,8 @@
   <div class="grid" id="grid"></div>
 
   <p class="hint">Tap a camera to take it live. Keys <kbd>1</kbd>–<kbd>9</kbd> switch with the selected
-    transition; hold <kbd>Shift</kbd> for a hard cut.</p>
+    transition; hold <kbd>Shift</kbd> for a hard cut. The menu under each camera sets its capture quality;
+    for the cleanest picture, pick the mode that matches the Output.</p>
 </main>
 
 <script>
@@ -141,7 +159,17 @@ function render(s) {
   state = s; previews = s.previews && showPreviews;
   updatePrevBtn();
   $('prevBtn').hidden = !s.previews;
-  $('out').textContent = s.output;
+  // Encoder status + output menu
+  $('enc').textContent = s.encoder_connected ? '● belaUI streaming' : 'belaUI not streaming';
+  $('enc').classList.toggle('ok', s.encoder_connected);
+  const outSel = $('outSel'), outs = Object.entries(s.output_choices || {});
+  if (outSel.options.length !== outs.length) {
+    outSel.innerHTML = outs.map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+  }
+  if (document.activeElement !== outSel) outSel.value = s.output_key;
+  const outLabel = (s.output_choices || {})[s.output_key] || s.output;
+  $('outBanner').hidden = !s.output_pending;
+  $('outBanner').textContent = `Output is now ${outLabel}. In belaUI press Stop, then Start, to stream it.`;
   const feed = s.audio_feed;
   $('audio').hidden = !feed;
   if (feed) {
@@ -173,12 +201,14 @@ function render(s) {
   if (grid.children.length !== s.cameras.length) {
     grid.innerHTML = '';
     s.cameras.forEach((c, i) => {
-      const b = document.createElement('button');
-      b.className = 'cam'; b.type = 'button';
-      b.innerHTML = `<div class="thumb"><img alt=""><span></span></div>
-        <div class="bar"><span class="num">${i + 1}</span><span class="name"></span><span class="st"></span></div>`;
-      b.addEventListener('click', () => take(i + 1));
-      grid.appendChild(b);
+      const d = document.createElement('div');
+      d.className = 'cam';
+      d.innerHTML = `<button class="take" type="button"><div class="thumb"><img alt=""><span></span></div>
+        <div class="bar"><span class="num">${i + 1}</span><span class="name"></span><span class="st"></span></div></button>
+        <select class="mode" aria-label="Capture quality" hidden></select>`;
+      d.querySelector('.take').addEventListener('click', () => take(i + 1));
+      d.querySelector('.mode').addEventListener('change', (e) => setMode(i, e.target));
+      grid.appendChild(d);
     });
   }
   s.cameras.forEach((c, i) => {
@@ -195,10 +225,40 @@ function render(s) {
     msg.textContent = c.online ? (previews ? '' : (c.input || 'preview off')) : (c.error || 'waiting for camera…');
     el.title = [c.input && 'Input: ' + c.input, c.cpu_work && 'CPU: ' + c.cpu_work, c.error,
                 c.audio_error && 'Audio: ' + c.audio_error].filter(Boolean).join('\n');
+    // Capture quality menu (cameras that report their modes)
+    const ms = el.querySelector('select.mode'), modes = c.modes || [];
+    ms.hidden = modes.length === 0;
+    const sig = JSON.stringify([modes, c.mode, c.mode_label]);
+    if (modes.length && ms.dataset.sig !== sig && document.activeElement !== ms) {
+      ms.dataset.sig = sig;
+      const autoLabel = 'Auto' + (c.mode === 'auto' && c.mode_label ? ' ' + c.mode_label.split(' ')[0] : '');
+      ms.innerHTML = `<option value="auto">${autoLabel}</option>` +
+        modes.map((m) => `<option value="${m.id}">${m.label}</option>`).join('');
+      ms.value = c.mode;
+      ms.classList.toggle('chosen', c.mode !== 'auto');
+    }
   });
 }
 
 function take(n, transition) { api('/api/switch', { cam: n, transition }); }
+
+function setMode(i, sel) {
+  const c = state.cameras[i];
+  if (i === state.active && !confirm(`${c.name} is live. It will go black for about a second while it changes quality. Change now?`)) {
+    sel.value = c.mode; return;
+  }
+  api('/api/camera_mode', { cam: i + 1, mode: sel.value });
+}
+
+$('outSel').onchange = (e) => {
+  const key = e.target.value, label = state.output_choices[key];
+  if (!confirm(`Change the output to ${label}?\n\nThe switcher restarts (a few seconds). Then press Stop and Start in belaUI so the stream uses ${label}.`)) {
+    e.target.value = state.output_key; return;
+  }
+  api('/api/output', { output: key }).catch(() => {});
+  $('outBanner').hidden = false;
+  $('outBanner').textContent = `Switching the output to ${label}… then press Stop and Start in belaUI.`;
+};
 
 $('tFade').onclick = () => api('/api/settings', { transition: 'fade' });
 $('tCut').onclick = () => api('/api/settings', { transition: 'cut' });
@@ -208,7 +268,7 @@ $('dur').oninput = (e) => {
   durTimer = setTimeout(() => api('/api/settings', { duration_ms: +e.target.value }), 150);
 };
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (['INPUT', 'SELECT'].includes(e.target.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
   const m = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
   if (m) { e.preventDefault(); take(+m[1], e.shiftKey ? 'cut' : undefined); }
 });
