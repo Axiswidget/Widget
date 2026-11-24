@@ -30,7 +30,7 @@ You need the BELABOX connected to the internet, and a laptop or phone on the sam
 4. **In belaUI**, choose the pipeline **`custom/multicam_switcher`** and press Start.
 5. **On your phone**, open **`http://<belabox-ip>:8181`** and tap a camera to switch.
 
-To install exactly the locked **v1.0** version, use `git clone -b v1.0 https://github.com/Axiswidget/Widget` in step 2.
+**Locked version (v1.0).** The design is frozen as v1.0 (see `CLAUDE.md`). The version you install is printed by `git log --oneline -1`. If later changes ever need undoing, `git checkout v1.0`, or the v1.0 commit listed in `CLAUDE.md`, then `sudo ./install.sh` puts it back.
 
 There's no config to edit. Cameras are found automatically. To update later, run `cd Widget && git pull && cd belabox-multicam && sudo ./install.sh`.
 
