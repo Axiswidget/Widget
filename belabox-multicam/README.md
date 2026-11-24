@@ -6,7 +6,7 @@ A simple multicam switcher for BELABOX. You can switch between cameras with smoo
  HDMI-in ─┐
  USB cam ─┼─► belaswitch (crossfade/cut) ──shared memory──► belacoder ──► srtla ──► your server
  USB cam ─┘        ▲
-                   └── phone / laptop:  http://<belabox-ip>:8181
+                   └── phone / laptop over Tailscale:  http://<belabox-tailscale-name>:8181
 ```
 
 * **Smooth transitions:** the incoming camera fades in over the outgoing one with an eased curve. The audio does an equal-power crossfade over the same time. You can also choose a hard cut.
@@ -28,9 +28,9 @@ You need the BELABOX connected to the internet, and a laptop or phone on the sam
    ```
 3. **Plug in your USB cameras** and choose **webcam / USB streaming** mode on each. They show up as buttons on their own. **Plug in your USB audio device** too. Its sound is used for the whole stream, whichever camera is live. To use HDMI audio instead, tap **HDMI** next to "Audio" on the control page.
 4. **In belaUI**, choose the pipeline **`custom/multicam_switcher`** and press Start.
-5. **On your phone**, open **`http://<belabox-ip>:8181`** and tap a camera to switch.
+5. **On your phone, with the Tailscale app connected**, open the address the installer printed (**`http://<belabox-tailscale-name>:8181`**) and tap a camera to switch. The control page only works over Tailscale.
 
-**Locked version (v1.0).** The design is frozen as v1.0 (see `CLAUDE.md`). The version you install is printed by `git log --oneline -1`. If later changes ever need undoing, `git checkout v1.0`, or the v1.0 commit listed in `CLAUDE.md`, then `sudo ./install.sh` puts it back.
+**Locked version (v1.1).** The design is frozen (see `CLAUDE.md`). To find the locked commit, run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md`. If later changes ever need undoing, `git checkout <that hash>` followed by `sudo ./install.sh` puts it back.
 
 If the BELABOX says `git: command not found`, download it this way instead (same files):
 ```sh
@@ -54,7 +54,7 @@ Then:
 
 1. Edit `/etc/belaswitch.json` to list your cameras (see below), then `sudo systemctl restart belaswitch`.
 2. In belaUI, pick the pipeline **`custom/multicam_switcher`** and press Start.
-3. On your phone (same network or hotspot), open **`http://<belabox-ip>:8181`**.
+3. On your phone, with Tailscale connected, open **`http://<belabox-tailscale-name>:8181`**.
 
 ## Configuring cameras
 
@@ -187,22 +187,22 @@ Nothing in belaUI or belacoder is modified, so BELABOX updates won't break it. I
 * **A GStreamer element is missing at install time.** `compositor`/`audiomixer` come from `gstreamer1.0-plugins-base`, `shmsink`/`shmsrc` from `gstreamer1.0-plugins-bad`, and `jpegenc`/`v4l2src` from `gstreamer1.0-plugins-good`. The BELABOX image normally includes all of them.
 * **No sound.** Run `arecord -l` and check that the `hw:CARD=` names match. The camera tile shows "audio offline" when the device can't be opened.
 
-## Tailscale
+## Tailscale (how you control it)
 
-The control page works over Tailscale, so you can switch cameras from anywhere: `http://<belabox-tailscale-name-or-100.x-ip>:8181`. The installer prints the address at the end.
+The control page is **controlled over Tailscale**. Open `http://<belabox-tailscale-name>:8181` (or its `100.x` address) from any device on your tailnet, wherever you are. The installer prints both addresses at the end, and warns you if Tailscale isn't running on the box (`sudo tailscale up`). Other networks, including local Wi-Fi without Tailscale, get a message pointing to the Tailscale address.
 
-Over Tailscale, the page's traffic leaves the BELABOX through the same cellular modems as your stream. So when you open it over Tailscale, it switches itself to **low-data mode**: pictures refresh every 2 s instead of about 3 times a second. Tap **Previews** at the top to turn pictures off completely. That setting is remembered on that phone. Measured with detailed (hard-to-compress) camera images:
+Over Tailscale, the page's traffic can leave the BELABOX through the same cellular modems as your stream, so by default it uses **low-data mode**: pictures refresh every 2 s instead of about 3 times a second. The **Previews** button at the top cycles through these settings, and each phone remembers its choice:
 
-| Control page | Upload used on the BELABOX |
-|---|---|
-| On local Wi-Fi / hotspot, previews on | ~1.2 Mbps (doesn't touch the cellular links) |
-| Over Tailscale, low-data previews | ~0.17 Mbps |
-| Over Tailscale, previews off | ~0.005 Mbps |
+| Previews | Upload used on the BELABOX | When |
+|---|---|---|
+| low-data (default) | ~0.1–0.2 Mbps | normal use, away from the box |
+| full | ~1.2 Mbps | phone right next to the box, on the same Wi-Fi |
+| off | ~0.01 Mbps | maximum bandwidth for the stream |
 
-Switching itself uses almost no data, and when you aren't looking at the page (tab in the background) it barely polls.
+These were measured with detailed, hard-to-compress images. Switching cameras itself uses almost no data, and a page left in the background barely polls.
 
 ## Security
 
-The control page has no password, so it only answers devices you control: **this BELABOX, your Tailscale devices, and private networks** (your Wi-Fi, the BELABOX hotspot, your LAN). Anything coming from the internet or the mobile carrier's network is refused. Tailscale is recognised by the interface the connection arrives on, not by the `100.x` address alone, because carriers use that same range for cellular addresses.
+The control page has no password, so by default it only answers **your Tailscale devices** (and the BELABOX itself). Everything else is refused: the internet, the mobile carrier's network, and local Wi-Fi or hotspot clients that aren't using Tailscale. Tailscale is recognised by the connection arriving on the box's own Tailscale address, not by the `100.x` address alone, because carriers use that same range for cellular addresses.
 
-To allow **only** Tailscale (for example when the BELABOX is on venue Wi-Fi shared with strangers), set `"web": {"allow": "tailscale"}` in `/etc/belaswitch.json` and restart. `"allow": "any"` removes the restriction.
+If you ever need the page without Tailscale (for example, Tailscale is down at a gig), set `"allow": "local"` in the `web` section of `/etc/belaswitch.json` to also allow Wi-Fi/hotspot/LAN devices, then run `sudo systemctl restart belaswitch`. `"allow": "any"` removes the restriction entirely.

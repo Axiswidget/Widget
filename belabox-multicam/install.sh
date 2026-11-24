@@ -27,14 +27,15 @@ cp web/index.html /opt/belaswitch/web/
 # Default: find USB cameras automatically. An unedited config from an
 # earlier install (still containing REPLACE placeholders) is upgraded too.
 if [ ! -f /etc/belaswitch.json ] || grep -q "REPLACE-with" /etc/belaswitch.json \
-   || { grep -q '"cameras": "auto"' /etc/belaswitch.json && ! grep -q audio_source /etc/belaswitch.json; }; then
+   || { grep -q '"cameras": "auto"' /etc/belaswitch.json && ! grep -q '"allow"' /etc/belaswitch.json; }; then
   [ -f /etc/belaswitch.json ] && cp /etc/belaswitch.json /etc/belaswitch.json.bak
   cat > /etc/belaswitch.json <<'JSON'
 {
   "output": { "width": 1920, "height": 1080, "fps": 30 },
   "transition": { "type": "fade", "duration_ms": 600 },
   "cameras": "auto",
-  "audio_source": "usb"
+  "audio_source": "usb",
+  "web": { "port": 8181, "allow": "tailscale" }
 }
 JSON
   echo "   /etc/belaswitch.json: cameras found automatically; sound from your USB audio device"
@@ -56,16 +57,20 @@ if systemctl list-unit-files | grep -q '^belaUI.service'; then
   systemctl restart belaUI
 fi
 
-IP=$(hostname -I 2>/dev/null | awk '{print $1}') || IP=""
 echo
 echo "Done."
-TSIP=""
+TSIP=""; TSNAME=""
 if command -v tailscale >/dev/null 2>&1; then
   TSIP=$(tailscale ip -4 2>/dev/null | head -n1) || TSIP=""
+  TSNAME=$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null) || TSNAME=""
 fi
-echo "  1. Switcher control page:  http://${IP:-<belabox-ip>}:8181/"
+echo "  1. Control page (over Tailscale only):"
+if [ -n "$TSNAME" ]; then echo "       http://${TSNAME}:8181/"; fi
 if [ -n "$TSIP" ]; then
-  echo "     over Tailscale:         http://${TSIP}:8181/   (low-data previews)"
+  echo "       http://${TSIP}:8181/"
+else
+  echo "       WARNING: Tailscale isn't running on this box, so the control page can't be reached."
+  echo "       Start it with:  sudo tailscale up"
 fi
 echo "  2. Plug in your USB cameras and put them in webcam mode - they appear as buttons."
 echo "  3. In belaUI, choose the pipeline 'custom/multicam_switcher' and start streaming."

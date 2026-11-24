@@ -59,10 +59,10 @@ DEFAULT_CONFIG = {
     "transition": {"type": "fade", "duration_ms": 600},
     "audio_follows_video": True,
     "previews": True,
-    # allow: "local" = this box, your Tailscale devices and private networks
-    #        (Wi-Fi/hotspot/LAN); "tailscale" = this box and Tailscale only;
+    # allow: "tailscale" = this box and your Tailscale devices only (default);
+    #        "local" = also private networks (Wi-Fi/hotspot/LAN);
     #        "any" = no restriction
-    "web": {"host": "0.0.0.0", "port": 8181, "allow": "local"},
+    "web": {"host": "0.0.0.0", "port": 8181, "allow": "tailscale"},
     "belacoder_pipelines_dir": None,
     "audio_bitrate": 128000,
     "cameras": [
@@ -85,19 +85,33 @@ TAILSCALE_NETS = [ipaddress.ip_network("100.64.0.0/10"),
 _ts_cache = {"at": 0.0, "addrs": set()}
 
 
-def tailscale_addresses(iface="tailscale0"):
-    """This machine's own addresses on the Tailscale interface (cached)."""
+def tailscale_addresses(refresh=False):
+    """This machine's own Tailscale addresses (cached for 30 s).
+
+    Asks Tailscale itself (`tailscale ip`) and also reads the addresses on
+    any tailscale* network interface, so either source is enough.
+    """
     now = time.monotonic()
-    if now - _ts_cache["at"] < 30:
+    if not refresh and now - _ts_cache["at"] < 30:
         return _ts_cache["addrs"]
     addrs = set()
-    try:
-        out = subprocess.run(["ip", "-o", "addr", "show", "dev", iface],
-                             capture_output=True, text=True, timeout=2).stdout
-        for m in re.finditer(r"\binet6? ([0-9a-fA-F:.]+)/", out):
-            addrs.add(ipaddress.ip_address(m.group(1)))
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+    for cmd in (["tailscale", "ip"], ["ip", "-o", "addr", "show"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if cmd[0] == "tailscale":
+            lines = out.split()
+        else:   # "3: tailscale0    inet 100.x.y.z/32 ..." -> only tailscale* interfaces
+            lines = [m.group(1) for m in re.finditer(
+                r"^\d+:\s+tailscale\S*\s+inet6? ([0-9a-fA-F:.]+)/", out, re.M)]
+        for a in lines:
+            try:
+                ip = ipaddress.ip_address(a.strip())
+            except ValueError:
+                continue
+            if any(ip in n for n in TAILSCALE_NETS):
+                addrs.add(ip)
     _ts_cache.update(at=now, addrs=addrs)
     return addrs
 
@@ -122,8 +136,14 @@ def client_kind(addr, local_addr=None, ts_addrs=None):
         return "loopback"
     if local_addr is not None:
         try:
+            local = _ip(local_addr)
             ts = tailscale_addresses() if ts_addrs is None else ts_addrs
-            if _ip(local_addr) in ts:
+            # Tailscale may have come up after our last look: check again
+            # rather than refuse the owner's phone for up to 30 s.
+            if (ts_addrs is None and local not in ts
+                    and any(local in n for n in TAILSCALE_NETS)):
+                ts = tailscale_addresses(refresh=True)
+            if local in ts:
                 return "tailscale"
         except ValueError:
             pass
@@ -1120,7 +1140,7 @@ class Switcher:
 
 def make_handler(sw):
     index_path = os.path.join(HERE, "web", "index.html")
-    allow = sw.cfg.get("web", {}).get("allow", "local")
+    allow = sw.cfg.get("web", {}).get("allow", "tailscale")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -1158,7 +1178,9 @@ def make_handler(sw):
         def _route(self):
             kind = client_kind(self.client_address[0], self.connection.getsockname()[0])
             if not client_allowed(kind, allow):
-                return self._send(403, {"error": "not allowed from this network"})
+                return self._send(403, "This switcher is controlled over Tailscale. Open it from a device "
+                                       "on your tailnet: http://<belabox-tailscale-name>:8181\n",
+                                  "text/plain; charset=utf-8")
             path, p = self._params()
             if path in ("/", "/index.html"):
                 with open(index_path, "rb") as f:

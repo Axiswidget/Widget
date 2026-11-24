@@ -110,17 +110,23 @@
 const $ = (id) => document.getElementById(id);
 let state = null, previews = true, durTimer = null, lastPreview = 0;
 // Previews on/off is remembered per device.
-let showPreviews = true;
-try { showPreviews = localStorage.getItem('previews') !== 'off'; } catch (e) {}
-function remote() { return !!(state && state.remote); }
+// Previews: 'auto' (low-data over Tailscale, full otherwise), 'full' or 'off'.
+// Remembered per device.
+let prevMode = 'auto';
+try { prevMode = ({ on: 'auto', off: 'off', full: 'full', auto: 'auto' })[localStorage.getItem('previews')] || 'auto'; } catch (e) {}
+let showPreviews = prevMode !== 'off';
+// Low-data = slow refresh. Over Tailscale the page's traffic can share the
+// stream's cellular uplink; choose "full" when the phone is next to the box.
+function remote() { return !!(state && state.remote) && prevMode === 'auto'; }
 function updatePrevBtn() {
   const b = $('prevBtn');
-  b.textContent = !showPreviews ? 'Previews: off' : (remote() ? 'Previews: low-data' : 'Previews: on');
-  b.classList.toggle('low', showPreviews && remote());
+  b.textContent = prevMode === 'off' ? 'Previews: off' : (remote() ? 'Previews: low-data' : 'Previews: full');
+  b.classList.toggle('low', remote());
 }
 $('prevBtn').onclick = () => {
-  showPreviews = !showPreviews;
-  try { localStorage.setItem('previews', showPreviews ? 'on' : 'off'); } catch (e) {}
+  prevMode = ({ auto: state && state.remote ? 'full' : 'off', full: 'off', off: 'auto' })[prevMode];
+  showPreviews = prevMode !== 'off';
+  try { localStorage.setItem('previews', prevMode); } catch (e) {}
   if (state) render(state);
 };
 

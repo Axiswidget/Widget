@@ -1,6 +1,6 @@
-# belaswitch: locked design (v1.0)
+# belaswitch: locked design (v1.1)
 
-v1.0 is the code as of the commit that last changed this paragraph: run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md` to get its hash.
+v1.1 (v1.0 + control over Tailscale only) is the code as of the commit that last changed this paragraph: run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md` to get its hash.
 
 This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has approved this design and wants it kept.** Fix bugs and adapt to their hardware, but don't redesign, restyle or add features unless they explicitly ask. If a change would alter anything listed under "Locked", ask them first.
 
@@ -55,10 +55,9 @@ This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has app
 
 **Tailscale and security.**
 
-* Allowed clients: loopback, Tailscale and private networks (`web.allow`: `local` | `tailscale` | `any`).
-* Tailscale is detected by the connection arriving on this machine's `tailscale0` address, **never by the 100.64.0.0/10 address alone**, because carriers use that range for CGNAT.
-* Over Tailscale the page goes into low-data mode: state every 1 s, pictures every 2 s, measured at ~0.17 Mbps against ~1.2 Mbps. Every state response must include `remote`.
-* Previews can be turned off on each device.
+* **The page is controlled over Tailscale.** The default `web.allow` is `tailscale`, which allows loopback and Tailscale only; `local` also allows private networks, and `any` allows everything. Refused clients get a plain message pointing to the Tailscale address.
+* Tailscale is detected by the connection arriving on one of this machine's own Tailscale addresses (`tailscale ip`, plus addresses on `tailscale*` interfaces), **never by the 100.64.0.0/10 address alone**, because carriers use that range for CGNAT. If Tailscale comes up late, the address cache is refreshed rather than refusing the owner's phone.
+* Previews cycle through low-data (the default over Tailscale: state every 1 s, pictures every 2 s), full and off. Each device remembers its setting, and every state response must include `remote`.
 
 ## Testing changes
 
