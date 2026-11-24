@@ -72,6 +72,38 @@ Then:
   "pipeline": "srtsrc uri=srt://:4001?mode=listener ! tsdemux ! h264parse ! mppvideodec" }
 ```
 
+## 4K 30 fps
+
+The switcher can mix and stream in 4K. Set `"output": { "width": 3840, "height": 2160, "fps": 30 }`; this is already the default in `config.example.json`. belacoder then hardware-encodes the 4K mix, just like BELABOX's stock `h265_hdmi_4k_2160p30` pipeline.
+
+At 4K, the important difference from stock BELABOX is where the work happens. BELABOX on its own sends the HDMI feed straight to the hardware encoder. The switcher has to mix the cameras *before* the encoder, so every camera is processed by the CPU. That work is nearly free when a camera already delivers **4K NV12 at 30 fps**. It gets expensive when a camera needs converting or scaling.
+
+Estimates per camera at 4K30. They were measured on a cloud server, and the Rock 5T's cores are roughly 2–4× slower, so treat them as a guide. The 33 ms frame budget at 30 fps is shared by all cameras:
+
+| Camera delivers | CPU work each frame | Verdict |
+|---|---|---|
+| 4K NV12 | none (passthrough) | ✅ ideal |
+| 4K NV16 / NV24 (YUV 4:2:2 / 4:4:4) | chroma convert, ~1 ms | ✅ fine |
+| 4K RGB/BGR | colour convert, ~11 ms here (≈25–40 ms on the Rock 5T) | ❌ likely drops frames |
+| 1080p MJPEG USB card | scaled by the RGA hardware when `mppjpegdec` supports it | ✅ fine |
+| 1080p raw USB/HDMI | software upscale to 4K, ~8 ms here | ⚠️ one is OK, several are not |
+| mixing and fades | ~3–4 ms here | ✅ fine |
+
+**Check what your camera actually delivers.** The log prints one line per camera, and the control page shows each camera's resolution. If a camera costs CPU work, its label turns amber and hovering over it shows what it costs:
+
+```
+[HDMI] input 3840x2160 NV12 @30                    <- good
+[USB]  input 1920x1080 BGR @30 - CPU scaling ..., converting BGR->NV12 every frame (heavy)
+```
+
+To see what the HDMI input receives, run `v4l2-ctl -d /dev/hdmirx --get-fmt-video`. If it reports RGB, set your camera's HDMI output colour format to **YCbCr / YUV** (often called "HDMI output → YCbCr 4:2:2" or similar) instead of RGB.
+
+**Tips for 4K multicam**
+
+* Keep the extra cameras on **MJPEG USB capture cards**. They are decoded and upscaled in hardware.
+* Set `"previews": false` if you need every last bit of CPU.
+* 4K needs a lot of bitrate. Over bonded cellular at around 6–10 Mbps, 1080p often looks better than 4K. You can still feed in a 4K camera and set the output to 1080p. That costs one software downscale of the 4K camera (~3 ms here) and makes the mixing 4× cheaper.
+
 ## HTTP API (for a Stream Deck, Bitfocus Companion, etc.)
 
 Camera numbers start at 1.

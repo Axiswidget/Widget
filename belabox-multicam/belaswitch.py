@@ -77,6 +77,20 @@ def has_element(name):
     return Gst.ElementFactory.find(name) is not None
 
 
+def has_prop(factory, prop):
+    """True if a GStreamer element type exists and has the given property."""
+    el = Gst.ElementFactory.make(factory, None)
+    return el is not None and el.find_property(prop) is not None
+
+
+def describe_caps(caps):
+    st = caps.get_structure(0)
+    w, h = st.get_value("width"), st.get_value("height")
+    ok, num, den = st.get_fraction("framerate")
+    fps = f"{num / den:.4g}" if ok and den else "?"
+    return w, h, st.get_value("format"), f"{w}x{h} {st.get_value('format')} @{fps}"
+
+
 def gst_quote(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -180,6 +194,8 @@ class Source:
         self.video_ok = False
         self.audio_ok = False
         self.preview = None       # latest JPEG bytes
+        self.input = ""           # what the camera actually delivers
+        self.cpu_work = ""        # software scaling/conversion it costs
         self.error = ""           # video problem, shown on the camera tile
         self.audio_error = ""
         self.retry_pending = {"video": False, "audio": False}
@@ -210,6 +226,9 @@ class Switcher:
         self.program_preview = None
         self.lock = threading.Lock()
         self.jpegenc = "jpegenc"
+        self.threads = min(4, os.cpu_count() or 1)
+        self.scale_threads = has_prop("videoscale", "n-threads")
+        self.convert_threads = has_prop("videoconvert", "n-threads")
         self._build()
 
     # ---------------- pipeline construction ----------------
@@ -295,7 +314,15 @@ class Switcher:
                     f"textoverlay text={gst_quote(s.name)} font-desc=\"Sans Bold 48\" "
                     "valignment=bottom halignment=left shaded-background=true")
         if kind == "mjpeg":
-            dec = "mppjpegdec" if has_element("mppjpegdec") else "jpegdec"
+            if has_element("mppjpegdec"):
+                dec = "mppjpegdec"
+                # The Rockchip decoder can scale and convert with the RGA
+                # hardware block, which keeps a 1080p camera in a 4K mix
+                # off the CPU.
+                if all(has_prop("mppjpegdec", p) for p in ("width", "height", "format")):
+                    dec += f" width={self.w} height={self.h} format=NV12"
+            else:
+                dec = "jpegdec"
             return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! image/jpeg{caps_extra} ! "
                     f"queue max-size-buffers=2 leaky=downstream ! {dec}")
         if kind == "v4l2":
@@ -309,9 +336,13 @@ class Switcher:
         vcaps = (f"video/x-raw,format=NV12,width={self.w},height={self.h},"
                  f"framerate={self.fps}/1,pixel-aspect-ratio=1/1")
         # videorate first so a 60 fps camera is thinned before we scale it.
+        # Both are passthrough (free) when the camera already delivers
+        # NV12 at the output size; otherwise spread the work over cores.
+        threads = f" n-threads={self.threads}" if self.threads > 1 else ""
         desc = (
-            f"{self._video_source_desc(s)} ! videorate ! videoscale add-borders=true ! "
-            f"videoconvert ! {vcaps} ! tee name=t "
+            f"{self._video_source_desc(s)} ! videorate name=rate ! "
+            f"videoscale add-borders=true{threads if self.scale_threads else ''} ! "
+            f"videoconvert{threads if self.convert_threads else ''} ! {vcaps} ! tee name=t "
             "t. ! queue name=out max-size-buffers=3 leaky=downstream "
         )
         if self.previews:
@@ -322,7 +353,29 @@ class Switcher:
         b.add_pad(Gst.GhostPad.new("src", out.get_static_pad("src")))
         if self.previews:
             self._hook_preview(b.get_by_name("preview"), s)
+        b.get_by_name("rate").get_static_pad("sink").add_probe(
+            Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_input_caps, s)
         return b
+
+    def _on_input_caps(self, pad, info, s):
+        ev = info.get_event()
+        if ev.type != Gst.EventType.CAPS:
+            return Gst.PadProbeReturn.OK
+        w, h, fmt, text = describe_caps(ev.parse_caps())
+        work = []
+        if (w, h) != (self.w, self.h):
+            work.append(f"scaling {w}x{h}->{self.w}x{self.h}")
+        if fmt != "NV12":
+            work.append(f"converting {fmt}->NV12")
+        if text != s.input:
+            s.input, s.cpu_work = text, ", ".join(work)
+            msg = f"[{s.name}] input {text}"
+            if work:
+                msg += f" - CPU {s.cpu_work} every frame"
+                if self.w * self.h >= 3840 * 2160 or fmt in ("BGR", "RGB", "BGRx", "RGBx"):
+                    msg += " (heavy: see README '4K')"
+            log(msg)
+        return Gst.PadProbeReturn.OK
 
     def _make_audio_bin(self, s, device, tag):
         desc = (f"alsasrc device={gst_quote(device)} ! audioconvert ! audioresample ! "
@@ -562,7 +615,8 @@ class Switcher:
             "cameras": [
                 {"index": s.index, "name": s.name, "online": s.video_ok,
                  "audio": bool(s.spec.get("audio")), "audio_online": s.audio_ok,
-                 "error": s.error, "audio_error": s.audio_error}
+                 "error": s.error, "audio_error": s.audio_error,
+                 "input": s.input, "cpu_work": s.cpu_work}
                 for s in self.sources
             ],
         }
