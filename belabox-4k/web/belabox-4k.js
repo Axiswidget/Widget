@@ -73,7 +73,16 @@
     if (lastNetifs) decorate(lastNetifs);
   }
 
+  // "13800 Kbps" -> "13.8 Mbps": shorter, so the row fits a phone screen
+  function compactSpeeds() {
+    $('#netifTable td.netif_tp').each(function () {
+      const m = $(this).text().match(/^(\d+) Kbps$/);
+      if (m && +m[1] >= 1000) $(this).text(`${(+m[1] / 1000).toFixed(1)} Mbps`);
+    });
+  }
+
   function decorate(netifs) {
+    compactSpeeds();
     $('#netifTable>tbody>tr').each(function () {
       const cell = $(this).find('.netif_name');
       const ifname = cell.text();
@@ -82,7 +91,7 @@
       cell.empty()
         .append($('<span class="bb4k-name">').text(nameFor(ifname, ip)))
         .append($('<small class="d-block text-muted">').text(
-          ifname + (signalOf(ifname) != null ? ` · signal ${signalOf(ifname)}%` : '')))
+          ifname + (signalOf(ifname) != null ? ` · ${signalOf(ifname)}%` : '')))
         .css('cursor', 'pointer')
         .attr('title', 'Tap to rename')
         .on('click', () => rename(ifname, ip));
@@ -93,7 +102,7 @@
   function ensurePanel() {
     let p = $('#bb4k-capacity');
     if (!p.length) {
-      p = $('<div id="bb4k-capacity" class="small px-2 py-2 border-top"></div>');
+      p = $('<div id="bb4k-capacity"></div>');
       $('#netifTable').after(p);
     }
     return p;
@@ -115,9 +124,11 @@
     const p = ensurePanel();
     const streaming = (typeof isStreaming !== 'undefined') && isStreaming;
     const now = Date.now();
+    const head = '<div class="bb4k-title">What can my connections carry?</div>';
+    const row = (k, v) => `<div class="bb4k-row"><span>${k}</span><strong>${v}</strong></div>`;
     if (!streaming) {
       samples = []; streamStart = 0;
-      p.html('<strong>What can my connections carry?</strong> Start the stream to measure.');
+      p.html(head + '<div class="bb4k-note">Start the stream to measure.</div>');
       return;
     }
     if (!streamStart) streamStart = now;
@@ -125,24 +136,22 @@
     samples = samples.filter((s) => now - s.t <= WINDOW_S * 1000);
     const secs = Math.round((now - streamStart) / 1000);
     if (secs < MIN_MEASURE_S) {
-      p.html(`<strong>What can my connections carry?</strong> Measuring… ${secs}/${MIN_MEASURE_S} s`);
+      p.html(head + `<div class="bb4k-note">Measuring… ${secs} / ${MIN_MEASURE_S} s</div>`);
       return;
     }
     const peak = Math.max(...samples.map((s) => s.kbps));
     const maxBr = currentMax();
     const rounded = (v) => Math.max(500, Math.floor(v / 250) * 250);
-    let html = `<strong>What can my connections carry?</strong><br>` +
-      `Sending now: <strong>${fmt(totalKbps)}</strong> · best in the last 2 min: <strong>${fmt(peak)}</strong><br>`;
+    let html = head + row('Sending now', fmt(totalKbps)) + row('Best in last 2 min', fmt(peak));
     if (maxBr && peak >= 0.9 * maxBr) {
-      html += `Your connections kept up with your max bitrate (${fmt(maxBr)}); they may carry more. ` +
-              `Raise it in small steps and watch for drops.<br>`;
-      html += `Best resolution at ${fmt(maxBr)}: <strong>${resolutionFor(maxBr)}</strong>`;
+      html += row('Best resolution', resolutionFor(maxBr)) +
+              `<div class="bb4k-note">Your connections kept up with your max bitrate (${fmt(maxBr)}). ` +
+              `They may carry more: raise it in small steps and watch for drops.</div>`;
     } else {
       const suggest = rounded(peak * 0.8);
-      html += `Suggested max bitrate: <strong>${suggest} Kbps</strong> (80% of the best)` +
+      html += row('Suggested max bitrate', `${suggest} Kbps`) + row('Best resolution', resolutionFor(suggest)) +
               (maxBr && suggest < maxBr - 250
-                ? ` <button type="button" class="btn btn-sm btn-primary py-0 ml-1" id="bb4k-use">Use ${suggest}</button>` : '') +
-              `<br>Best resolution for this: <strong>${resolutionFor(suggest)}</strong>`;
+                ? `<button type="button" class="btn btn-primary btn-block mt-2" id="bb4k-use">Use ${suggest} Kbps</button>` : '');
       p.html(html);
       $('#bb4k-use').on('click', () => {
         try {
@@ -155,6 +164,23 @@
     }
     p.html(html);
   }
+
+  // ---------------------------------------------------------------- styles
+  $('<style>').text(`
+    #netifTable td.netif_tp { width: 1%; white-space: nowrap; text-align: right; }
+    #netifTable td.netif_ip { font-size: .85em; opacity: .7; white-space: nowrap; }
+    #netifTable td.netif_name .bb4k-name { white-space: nowrap; }
+    #netifTable td.netif_name small { white-space: nowrap; font-size: .75em; }
+    #bb4k-capacity { margin: 0 0 .5rem; padding: .6rem .75rem; border-top: 1px solid rgba(128,128,128,.35);
+                     font-size: .9rem; }
+    #bb4k-capacity .bb4k-title { font-weight: 600; margin-bottom: .25rem; }
+    #bb4k-capacity .bb4k-row { display: flex; justify-content: space-between; gap: 1rem; padding: .1rem 0; }
+    #bb4k-capacity .bb4k-row span { opacity: .75; }
+    #bb4k-capacity .bb4k-note { opacity: .75; }
+    @media (max-width: 400px) {
+      #netifTable td.netif_ip { font-size: .75em; }
+    }
+  `).appendTo('head');
 
   // ------------------------------------------------- hook into belaUI
   function wrap(fnName, after) {
