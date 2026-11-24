@@ -178,6 +178,22 @@ Nothing in belaUI or belacoder is modified, so BELABOX updates won't break it. I
 * **A GStreamer element is missing at install time.** `compositor`/`audiomixer` come from `gstreamer1.0-plugins-base`, `shmsink`/`shmsrc` from `gstreamer1.0-plugins-bad`, and `jpegenc`/`v4l2src` from `gstreamer1.0-plugins-good`. The BELABOX image normally includes all of them.
 * **No sound.** Run `arecord -l` and check that the `hw:CARD=` names match. The camera tile shows "audio offline" when the device can't be opened.
 
+## Tailscale
+
+The control page works over Tailscale, so you can switch cameras from anywhere: `http://<belabox-tailscale-name-or-100.x-ip>:8181`. The installer prints the address at the end.
+
+Over Tailscale, the page's traffic leaves the BELABOX through the same cellular modems as your stream. So when you open it over Tailscale, it switches itself to **low-data mode**: pictures refresh every 2 s instead of about 3 times a second. Tap **Previews** at the top to turn pictures off completely. That setting is remembered on that phone. Measured with detailed (hard-to-compress) camera images:
+
+| Control page | Upload used on the BELABOX |
+|---|---|
+| On local Wi-Fi / hotspot, previews on | ~1.2 Mbps (doesn't touch the cellular links) |
+| Over Tailscale, low-data previews | ~0.17 Mbps |
+| Over Tailscale, previews off | ~0.005 Mbps |
+
+Switching itself uses almost no data, and when you aren't looking at the page (tab in the background) it barely polls.
+
 ## Security
 
-The control page has no password and listens on every network interface, so anyone who can reach port 8181 can switch cameras. Cellular modems are usually behind carrier NAT, so in practice this normally means your local Wi-Fi or hotspot. To lock it down, set `"web": {"host": "127.0.0.1"}` and reach it through an SSH tunnel, or firewall port 8181.
+The control page has no password, so it only answers devices you control: **this BELABOX, your Tailscale devices, and private networks** (your Wi-Fi, the BELABOX hotspot, your LAN). Anything coming from the internet or the mobile carrier's network is refused. Tailscale is recognised by the interface the connection arrives on, not by the `100.x` address alone, because carriers use that same range for cellular addresses.
+
+To allow **only** Tailscale (for example when the BELABOX is on venue Wi-Fi shared with strangers), set `"web": {"allow": "tailscale"}` in `/etc/belaswitch.json` and restart. `"allow": "any"` removes the restriction.

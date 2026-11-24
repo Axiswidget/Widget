@@ -17,11 +17,13 @@ of each camera and lets you switch with a tap or with keys 1-9.
 
 import argparse
 import glob
+import ipaddress
 import json
 import re
 import math
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -57,7 +59,10 @@ DEFAULT_CONFIG = {
     "transition": {"type": "fade", "duration_ms": 600},
     "audio_follows_video": True,
     "previews": True,
-    "web": {"host": "0.0.0.0", "port": 8181},
+    # allow: "local" = this box, your Tailscale devices and private networks
+    #        (Wi-Fi/hotspot/LAN); "tailscale" = this box and Tailscale only;
+    #        "any" = no restriction
+    "web": {"host": "0.0.0.0", "port": 8181, "allow": "local"},
     "belacoder_pipelines_dir": None,
     "audio_bitrate": 128000,
     "cameras": [
@@ -71,6 +76,70 @@ DEFAULT_CONFIG = {
     "audio_source": "camera",
     "hdmi_audio_device": "hw:CARD=rockchiphdmiin",
 }
+
+
+TAILSCALE_NETS = [ipaddress.ip_network("100.64.0.0/10"),
+                  ipaddress.ip_network("fd7a:115c:a1e0::/48")]
+
+
+_ts_cache = {"at": 0.0, "addrs": set()}
+
+
+def tailscale_addresses(iface="tailscale0"):
+    """This machine's own addresses on the Tailscale interface (cached)."""
+    now = time.monotonic()
+    if now - _ts_cache["at"] < 30:
+        return _ts_cache["addrs"]
+    addrs = set()
+    try:
+        out = subprocess.run(["ip", "-o", "addr", "show", "dev", iface],
+                             capture_output=True, text=True, timeout=2).stdout
+        for m in re.finditer(r"\binet6? ([0-9a-fA-F:.]+)/", out):
+            addrs.add(ipaddress.ip_address(m.group(1)))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    _ts_cache.update(at=now, addrs=addrs)
+    return addrs
+
+
+def _ip(addr):
+    ip = ipaddress.ip_address(addr.split("%")[0])
+    return ip.ipv4_mapped if getattr(ip, "ipv4_mapped", None) else ip
+
+
+def client_kind(addr, local_addr=None, ts_addrs=None):
+    """'loopback', 'tailscale', 'private' or 'public' for a client.
+
+    Tailscale is recognised by the connection arriving on this machine's
+    Tailscale address, not by the client's IP alone: mobile carriers use
+    the same 100.64.0.0/10 range for cellular (CGNAT) addresses.
+    """
+    try:
+        ip = _ip(addr)
+    except ValueError:
+        return "public"
+    if ip.is_loopback:
+        return "loopback"
+    if local_addr is not None:
+        try:
+            ts = tailscale_addresses() if ts_addrs is None else ts_addrs
+            if _ip(local_addr) in ts:
+                return "tailscale"
+        except ValueError:
+            pass
+    if any(ip in n for n in TAILSCALE_NETS):
+        return "public"          # 100.64/10 not via Tailscale = carrier NAT
+    if ip.is_private or ip.is_link_local:
+        return "private"
+    return "public"
+
+
+def client_allowed(kind, allow):
+    if allow == "any":
+        return True
+    if allow == "tailscale":
+        return kind in ("loopback", "tailscale")
+    return kind in ("loopback", "tailscale", "private")
 
 
 def load_state():
@@ -1041,6 +1110,7 @@ class Switcher:
 
 def make_handler(sw):
     index_path = os.path.join(HERE, "web", "index.html")
+    allow = sw.cfg.get("web", {}).get("allow", "local")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -1076,12 +1146,19 @@ def make_handler(sw):
             self._route()
 
         def _route(self):
+            kind = client_kind(self.client_address[0], self.connection.getsockname()[0])
+            if not client_allowed(kind, allow):
+                return self._send(403, {"error": "not allowed from this network"})
             path, p = self._params()
             if path in ("/", "/index.html"):
                 with open(index_path, "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
             if path == "/api/state":
-                return self._send(200, sw.state())
+                st = sw.state()
+                # Over Tailscale the page's traffic shares the cellular
+                # uplink with the stream, so the page goes into low-data mode.
+                st["remote"] = kind == "tailscale"
+                return self._send(200, st)
             if path in ("/api/switch", "/api/cut", "/api/fade"):
                 try:
                     cam = int(p["cam"]) - 1   # 1-based in the API, like the buttons

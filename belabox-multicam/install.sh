@@ -59,7 +59,9 @@ fi
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "Done."
+TSIP=$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1)
 echo "  1. Switcher control page:  http://${IP:-<belabox-ip>}:8181/"
+[ -n "$TSIP" ] && echo "     over Tailscale:         http://${TSIP}:8181/   (low-data previews)"
 echo "  2. Plug in your USB cameras and put them in webcam mode - they appear as buttons."
 echo "  3. In belaUI, choose the pipeline 'custom/multicam_switcher' and start streaming."
 echo "  Logs: journalctl -u belaswitch -f"

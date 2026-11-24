@@ -11,6 +11,7 @@
     --muted: #8b929c; --live: #e5372b; --next: #2fbf71; --accent: #3b82f6;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
   main { max-width: 1100px; margin: 0 auto; padding: 12px 16px 32px; }
@@ -19,6 +20,8 @@
   .pill { font-size: 12px; color: var(--muted); border: 1px solid var(--line);
           border-radius: 999px; padding: 3px 10px; }
   .pill.err { color: #ffb4ab; border-color: #7a2d27; }
+  button.pill.btn { background: none; font: inherit; font-size: 12px; cursor: pointer; }
+  button.pill.btn.low { color: #f5c26b; border-color: #6b5426; }
 
   .program { position: relative; background: #000; border-radius: 10px; overflow: hidden;
              aspect-ratio: 16 / 9; border: 2px solid var(--live);
@@ -73,6 +76,7 @@
   <header>
     <h1>Multicam Switcher</h1>
     <span class="pill" id="audio" hidden></span>
+    <button class="pill btn" id="prevBtn" type="button" title="Live previews use data. Over Tailscale that data shares the stream's cellular uplink."></button>
     <span class="pill" id="out">…</span>
     <span class="pill" id="conn">connecting</span>
   </header>
@@ -104,7 +108,21 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let state = null, previews = true, durTimer = null;
+let state = null, previews = true, durTimer = null, lastPreview = 0;
+// Previews on/off is remembered per device.
+let showPreviews = true;
+try { showPreviews = localStorage.getItem('previews') !== 'off'; } catch (e) {}
+function remote() { return !!(state && state.remote); }
+function updatePrevBtn() {
+  const b = $('prevBtn');
+  b.textContent = !showPreviews ? 'Previews: off' : (remote() ? 'Previews: low-data' : 'Previews: on');
+  b.classList.toggle('low', showPreviews && remote());
+}
+$('prevBtn').onclick = () => {
+  showPreviews = !showPreviews;
+  try { localStorage.setItem('previews', showPreviews ? 'on' : 'off'); } catch (e) {}
+  if (state) render(state);
+};
 
 async function api(path, body) {
   const r = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : {});
@@ -114,7 +132,9 @@ async function api(path, body) {
 }
 
 function render(s) {
-  state = s; previews = s.previews;
+  state = s; previews = s.previews && showPreviews;
+  updatePrevBtn();
+  $('prevBtn').hidden = !s.previews;
   $('out').textContent = s.output;
   const feed = s.audio_feed;
   $('audio').hidden = !feed;
@@ -166,7 +186,7 @@ function render(s) {
     st.classList.toggle('warn', c.online && !!c.cpu_work);
     const img = el.querySelector('img'), msg = el.querySelector('.thumb span');
     img.style.display = c.online && previews ? '' : 'none';
-    msg.textContent = c.online ? (previews ? '' : 'preview off') : (c.error || 'waiting for camera…');
+    msg.textContent = c.online ? (previews ? '' : (c.input || 'preview off')) : (c.error || 'waiting for camera…');
     el.title = [c.input && 'Input: ' + c.input, c.cpu_work && 'CPU: ' + c.cpu_work, c.error,
                 c.audio_error && 'Audio: ' + c.audio_error].filter(Boolean).join('\n');
   });
@@ -200,7 +220,11 @@ async function poll() {
   try {
     await api('/api/state');
     $('conn').textContent = 'connected'; $('conn').classList.remove('err');
-    if (previews) {
+    // Over Tailscale the page shares the cellular uplink with the stream:
+    // refresh pictures every 2 s instead of ~3x a second.
+    const due = Date.now() - lastPreview >= (remote() ? 2000 : 0);
+    if (previews && due) {
+      lastPreview = Date.now();
       refreshImg($('program'), '/preview/program.jpg');
       state.cameras.forEach((c, i) => {
         if (c.online) refreshImg($('grid').children[i].querySelector('img'), `/preview/${i + 1}.jpg`);
@@ -209,7 +233,7 @@ async function poll() {
   } catch (e) {
     $('conn').textContent = 'switcher offline'; $('conn').classList.add('err');
   }
-  setTimeout(poll, document.hidden ? 2000 : 300);
+  setTimeout(poll, document.hidden ? 3000 : (remote() ? 1000 : 300));
 }
 poll();
 </script>
