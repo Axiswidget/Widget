@@ -70,6 +70,13 @@ This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has app
 * Tailscale is detected by the connection arriving on one of this machine's own Tailscale addresses (`tailscale ip`, plus addresses on `tailscale*` interfaces), **never by the 100.64.0.0/10 address alone**, because carriers use that range for CGNAT. If Tailscale comes up late, the address cache is refreshed rather than refusing the owner's phone.
 * Previews cycle through low-data (the default over Tailscale: state every 1 s, pictures every 2 s), full (the default on the local Wi-Fi) and off. Each device remembers its setting, and every state response must include `remote`.
 
+## GStreamer 1.20 (the owner's box: Ubuntu 22.04, BELABOX)
+
+* **Test against 1.20, not just a newer GStreamer.** Ubuntu 22.04's 1.20.3 packages can be unpacked and loaded through `LD_LIBRARY_PATH`, `GI_TYPELIB_PATH` and `GST_PLUGIN_SYSTEM_PATH`.
+* The BELABOX image has **no `gst-launch-1.0` or `gst-inspect-1.0`**. Use `belaswitch.py --diagnose [SECONDS]` on the box: it prints the state of every element, the buffer count per pad, and the negotiated caps.
+* Previews are **pulled** (`try-pull-sample`) when the page asks. There are no Python callbacks in streaming threads for previews.
+* LATENCY messages trigger `recalculate_latency()`, and the latency is recalculated again after the pipeline starts and after each source attaches. A link refused by the mixer is reported and retried, never fatal.
+
 ## Testing changes
 
 The Rock 5T hardware (mpp encoder/decoder, RGA, hdmirx) isn't available off-device. Off the device, test with `"type": "test"` or `"custom"` cameras and stand-in audio bins. Check what belacoder receives by reading the shm sockets with `shmsrc`. On the device, use `journalctl -u belaswitch -f`.

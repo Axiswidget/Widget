@@ -670,6 +670,7 @@ class Switcher:
         self.fade = None          # (start_time, duration_s, from_idx, to_idx)
         self.fade_timer = None
         self.program_preview = None
+        self.program_sink = None
         self.lock = threading.Lock()
         self.jpegenc = "jpegenc"
         self.threads = min(4, os.cpu_count() or 1)
@@ -731,14 +732,29 @@ class Switcher:
             "queue max-size-buffers=1 leaky=downstream ! "
             "videorate drop-only=true max-rate=4 ! videoscale ! videoconvert ! "
             f"video/x-raw,width={pw},height={ph},pixel-aspect-ratio=1/1 ! "
-            f"{self.jpegenc} quality=70 ! appsink name={sink_name} emit-signals=true "
+            f"{self.jpegenc} quality=70 ! appsink name={sink_name} emit-signals=false "
             "max-buffers=1 drop=true sync=false async=false "
         )
 
     def _hook_preview(self, appsink, src):
-        def on_sample(sink):
-            sample = sink.emit("pull-sample")
-            if sample:
+        """Remember a preview appsink; pictures are pulled when the page asks.
+
+        No Python runs in GStreamer's streaming threads for previews: with
+        GStreamer 1.20 (BELABOX) a Python "new-sample" callback there
+        stalled the whole audio mix (found by testing against Ubuntu 22.04's
+        GStreamer 1.20.3), so belacoder never got audio and sent nothing.
+        """
+        if src is None:
+            self.program_sink = appsink
+        else:
+            src.preview_sink = appsink
+
+    def get_preview(self, src=None):
+        """Latest JPEG for a camera (or the programme when src is None)."""
+        sink = self.program_sink if src is None else getattr(src, "preview_sink", None)
+        if sink is not None:
+            sample = sink.emit("try-pull-sample", 0)
+            if sample is not None:
                 buf = sample.get_buffer()
                 ok, info = buf.map(Gst.MapFlags.READ)
                 if ok:
@@ -748,8 +764,7 @@ class Switcher:
                         self.program_preview = data
                     else:
                         src.preview = data
-            return Gst.FlowReturn.OK
-        appsink.connect("new-sample", on_sample)
+        return self.program_preview if src is None else getattr(src, "preview", None)
 
     def _video_source_desc(self, s):
         spec = s.spec
@@ -920,10 +935,23 @@ class Switcher:
         self.pipeline.add(b)
         pad = self.comp.request_pad_simple("sink_%u")
         self._apply_video_props(s, pad)
-        b.get_static_pad("src").link(pad)
+        ret = b.get_static_pad("src").link(pad)
+        if ret != Gst.PadLinkReturn.OK:
+            # e.g. a format the mixer can't take: report it and retry later
+            # instead of taking the whole switcher down
+            log(f"[{s.name}] could not connect to the mixer ({ret.value_nick})")
+            self.comp.release_request_pad(pad)
+            self.pipeline.remove(b)
+            b.set_state(Gst.State.NULL)
+            s.error = f"mixer refused this camera's format ({ret.value_nick})"
+            s.failing["video"] = True
+            self._schedule_retry(s, "video")
+            return False
         s.vbin, s.vpad = b, pad
         self._watch_data(s, "video", b.get_static_pad("src"))
         b.sync_state_with_parent()
+        for ms in (500, 2000):
+            GLib.timeout_add(ms, self._relatency)
         s.video_ok = True
         self._announce(s, "video", b)
         return True
@@ -972,6 +1000,7 @@ class Switcher:
             s.apad = pad
             ghost.remove_probe(block_id)
             s.audio_ok = True
+            GLib.timeout_add(300, self._relatency)
             self._announce(s, "audio", b, f" ({device})")
             old = getattr(s, "replaces", None)
             if old is not None:          # new feed is live: drop the old one now
@@ -1010,6 +1039,10 @@ class Switcher:
                 log(f"[{s.name}] {kind} back{extra}")
             return False
         GLib.timeout_add_seconds(2, check)
+
+    def _relatency(self):
+        self.pipeline.recalculate_latency()
+        return False
 
     def _watch_data(self, s, kind, pad):
         now = time.monotonic()
@@ -1068,6 +1101,7 @@ class Switcher:
             s.vbin = s.vpad = None
             s.video_ok = False
             s.preview = None
+            s.preview_sink = None
         else:
             s.abin = s.apad = None
             s.audio_ok = False
@@ -1131,6 +1165,8 @@ class Switcher:
                 self._schedule_retry(s, kind)
                 return False
             GLib.idle_add(teardown)
+        elif msg.type == Gst.MessageType.LATENCY:
+            self.pipeline.recalculate_latency()
         elif msg.type == Gst.MessageType.WARNING:
             w, _ = msg.parse_warning()
             log(f"warning from {msg.src.get_name()}: {w.message}")
@@ -1255,7 +1291,14 @@ class Switcher:
             except OSError:
                 pass
         self.loop = GLib.MainLoop()
-        self.pipeline.set_state(Gst.State.PLAYING)
+        ret = self.pipeline.set_state(Gst.State.PLAYING)
+        log(f"pipeline start: {ret.value_nick} (GStreamer {Gst.version_string()})")
+        # GStreamer 1.20 (Ubuntu 22.04, BELABOX): the mixers ask their live
+        # inputs for their latency before those inputs have negotiated, the
+        # question fails, and the mixer then waits for *every* input forever.
+        # Newer GStreamer re-asks by itself; 1.20 must be told to.
+        for ms in (300, 1000, 2500):
+            GLib.timeout_add(ms, self._relatency)
         GLib.timeout_add(500, self._watchdog)
         for s in self.sources:
             self._attach_video(s)
@@ -1431,6 +1474,89 @@ class Switcher:
 # Web control
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Diagnostics (--diagnose): where does video stop?
+# --------------------------------------------------------------------------
+
+_diag = {"counts": {}, "t0": 0.0}
+
+
+def _all_elements(bin_):
+    it = bin_.iterate_recurse()
+    out = []
+    while True:
+        ok, el = it.next()
+        if ok != Gst.IteratorResult.OK:
+            break
+        out.append(el)
+    return out
+
+
+def _pads(el):
+    it = el.iterate_pads()
+    out = []
+    while True:
+        ok, p = it.next()
+        if ok != Gst.IteratorResult.OK:
+            break
+        out.append(p)
+    return out
+
+
+def _path(obj):
+    parts = []
+    while obj is not None and obj.get_parent() is not None:
+        parts.append(obj.get_name())
+        obj = obj.get_parent()
+    return "/".join(reversed(parts))
+
+
+def diagnose_start(sw):
+    _diag["t0"] = time.monotonic()
+    for el in _all_elements(sw.pipeline):
+        for p in _pads(el):
+            key = _path(p)
+            _diag["counts"][key] = 0
+
+            def count(_pad, _info, key=key):
+                _diag["counts"][key] += 1
+                return Gst.PadProbeReturn.OK
+            p.add_probe(Gst.PadProbeType.BUFFER, count)
+    log(f"diagnose: counting buffers on {len(_diag['counts'])} pads...")
+
+
+def diagnose_report(sw):
+    secs = time.monotonic() - _diag["t0"]
+    out = [f"===== belaswitch diagnose ({secs:.0f} s) =====",
+           f"GStreamer {Gst.version_string()} | Python {sys.version.split()[0]} | PyGObject {gi.__version__}"]
+    r, cur, pend = sw.pipeline.get_state(0)
+    out.append(f"pipeline: {cur.value_nick} (pending {pend.value_nick}, last change {r.value_nick})")
+    bad = []
+    for el in _all_elements(sw.pipeline):
+        r, cur, pend = el.get_state(0)
+        if cur != Gst.State.PLAYING or pend != Gst.State.VOID_PENDING:
+            bad.append(f"  {_path(el)} [{el.get_factory().get_name() if el.get_factory() else 'bin'}]: "
+                       f"{cur.value_nick} (pending {pend.value_nick}, {r.value_nick})")
+    out.append("elements not PLAYING: " + ("none" if not bad else ""))
+    out += bad
+    out.append("buffers per pad (pad: count | caps):")
+    for el in _all_elements(sw.pipeline):
+        for p in _pads(el):
+            key = _path(p)
+            if key not in _diag["counts"] or p.get_direction() != Gst.PadDirection.SRC:
+                continue
+            caps = p.get_current_caps()
+            cs = caps.to_string() if caps else "-"
+            cs = re.sub(r"\(\w+\)", "", cs)[:110]
+            flag = "" if _diag["counts"][key] else "   <-- nothing"
+            out.append(f"  {key}: {_diag['counts'][key]} | {cs}{flag}")
+    out.append("cameras: " + "; ".join(
+        f"{c['name']}={'online' if c['online'] else 'offline'}" + (f" ({c['error']})" if c['error'] else "")
+        for c in sw.state()["cameras"]))
+    out.append("===== end =====")
+    print("\n".join(out), flush=True)
+
+
 def make_handler(sw):
     index_path = os.path.join(HERE, "web", "index.html")
     allow = sw.cfg.get("web", {}).get("allow", "local")
@@ -1520,9 +1646,9 @@ def make_handler(sw):
                 return self._send(200, state())
             if path.startswith("/preview/") and path.endswith(".jpg"):
                 key = path[len("/preview/"):-4]
-                data = sw.program_preview if key == "program" else None
+                data = sw.get_preview(None) if key == "program" else None
                 if key.isdigit() and 1 <= int(key) <= len(sw.sources):
-                    data = sw.sources[int(key) - 1].preview
+                    data = sw.get_preview(sw.sources[int(key) - 1])
                 if data:
                     return self._send(200, data, "image/jpeg")
                 return self._send(404, {"error": "no preview"})
@@ -1538,6 +1664,8 @@ def main():
                     help="print the belacoder pipeline for this config and exit")
     ap.add_argument("--no-pipeline-file", action="store_true",
                     help="don't write the pipeline into belacoder's custom/ directory")
+    ap.add_argument("--diagnose", type=int, nargs="?", const=15, metavar="SECONDS",
+                    help="run for a while, then print where video is (or isn't) flowing, and exit")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -1564,6 +1692,9 @@ def main():
         return False
     for sig in (signal.SIGTERM, signal.SIGINT):
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, stop)
+    if args.diagnose:
+        GLib.timeout_add_seconds(3, lambda: (diagnose_start(sw), False)[1])
+        GLib.timeout_add_seconds(3 + args.diagnose, lambda: (diagnose_report(sw), sw.loop.quit(), False)[2])
     sw.run()
     httpd.shutdown()
     return sw.exit_code
