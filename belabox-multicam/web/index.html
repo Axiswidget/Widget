@@ -61,6 +61,8 @@
   .cam .st { font-size: 12px; color: var(--muted); }
   .cam .st.off { color: #ffb4ab; }
   .cam .st.warn { color: #f5c26b; }
+  .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px;
+           padding: 24px 16px; text-align: center; color: var(--muted); }
   .hint { color: var(--muted); font-size: 13px; margin-top: 16px; }
   kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; }
 </style>
@@ -89,6 +91,8 @@
     </label>
   </div>
 
+  <p class="empty" id="empty" hidden>No cameras yet. Plug in a USB camera and switch it to webcam mode;
+    it will appear here within a few seconds.</p>
   <div class="grid" id="grid"></div>
 
   <p class="hint">Tap a camera to take it live. Keys <kbd>1</kbd>–<kbd>9</kbd> switch with the selected
@@ -116,6 +120,7 @@ function render(s) {
   $('programBox').style.display = previews ? '' : 'none';
 
   const grid = $('grid');
+  $('empty').hidden = s.cameras.length > 0;
   if (grid.children.length !== s.cameras.length) {
     grid.innerHTML = '';
     s.cameras.forEach((c, i) => {

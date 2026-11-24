@@ -15,6 +15,23 @@ A simple multicam switcher for BELABOX. You can switch between cameras with smoo
 * **Simple control page:** it shows a live programme view and a thumbnail for each camera. Tap a camera to take it live, or press keys `1`–`9` (hold `Shift` for a cut).
 * **Works inside belaUI:** belaUI lists it as a normal pipeline, `custom/multicam_switcher`. Bitrate control, the bitrate overlay, A/V delay and the AAC/Opus choice all still work.
 
+## Quick start
+
+You need the BELABOX connected to the internet, and a laptop or phone on the same network.
+
+1. **Log in to the BELABOX.** Turn on SSH in belaUI's settings, then on your laptop run `ssh <username>@<belabox-ip>`.
+2. **Install** (paste all three lines):
+   ```sh
+   git clone -b claude/rock5t-multicam-switcher-rpbzrz https://github.com/Axiswidget/Widget
+   cd Widget/belabox-multicam
+   sudo ./install.sh
+   ```
+3. **Plug in your USB cameras** and choose **webcam / USB streaming** mode on each. They show up as buttons on their own, with their sound.
+4. **In belaUI**, choose the pipeline **`custom/multicam_switcher`** and press Start.
+5. **On your phone**, open **`http://<belabox-ip>:8181`** and tap a camera to switch.
+
+There's no config to edit. Cameras are found automatically. To update later, run `cd Widget && git pull && cd belabox-multicam && sudo ./install.sh`.
+
 ## Install
 
 Copy this folder to the BELABOX, for example with `scp -r belabox-multicam user@belabox.local:` or `git clone`. Then run:
@@ -31,6 +48,8 @@ Then:
 3. On your phone (same network or hotspot), open **`http://<belabox-ip>:8181`**.
 
 ## Configuring cameras
+
+By default the installer sets `"cameras": "auto"`. Every USB camera that is plugged in (or plugged in later) gets a button, named after the camera, with its own sound. Buttons are numbered in the order the cameras are found. To choose names or the order yourself, or to add the HDMI input, replace `"auto"` with a list as shown below.
 
 `/etc/belaswitch.json`:
 

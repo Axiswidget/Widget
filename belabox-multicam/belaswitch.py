@@ -16,7 +16,9 @@ of each camera and lets you switch with a tap or with keys 1-9.
 """
 
 import argparse
+import glob
 import json
+import re
 import math
 import os
 import signal
@@ -89,6 +91,27 @@ def describe_caps(caps):
     ok, num, den = st.get_fraction("framerate")
     fps = f"{num / den:.4g}" if ok and den else "?"
     return w, h, st.get_value("format"), f"{w}x{h} {st.get_value('format')} @{fps}"
+
+
+BY_ID_DIR = "/dev/v4l/by-id"
+
+
+def friendly_camera_name(by_id_path):
+    """'usb-OM_Digital_Solutions_OM-1_0123ABCD-video-index0' -> 'OM Digital Solutions OM-1'."""
+    n = os.path.basename(by_id_path)
+    n = re.sub(r"^usb-", "", n)
+    n = re.sub(r"-video-index\d+$", "", n)
+    parts = [p for p in n.split("_") if p]
+    # drop a trailing serial number (long token with digits)
+    if len(parts) > 1 and len(parts[-1]) >= 6 and re.search(r"\d", parts[-1]):
+        parts = parts[:-1]
+    name = " ".join(parts) or "USB camera"
+    return name if len(name) <= 28 else name[:27] + "…"
+
+
+def find_usb_cameras(by_id_dir=BY_ID_DIR):
+    """Every USB camera's main video node, in a stable order."""
+    return sorted(glob.glob(os.path.join(by_id_dir, "*-video-index0")))
 
 
 class NotReady(Exception):
@@ -282,7 +305,9 @@ class Switcher:
         self.duration_ms = int(cfg["transition"].get("duration_ms", 600))
         self.follow = bool(cfg.get("audio_follows_video", True))
         self.previews = bool(cfg.get("previews", True))
-        self.sources = [Source(i, s) for i, s in enumerate(cfg["cameras"])]
+        # "cameras": "auto" -> use every USB camera that is (or gets) plugged in
+        self.auto = cfg["cameras"] == "auto"
+        self.sources = [] if self.auto else [Source(i, s) for i, s in enumerate(cfg["cameras"])]
         self.extra_audio = [Source(100 + i, dict(s, name=s.get("name", f"Audio {i + 1}")))
                             for i, s in enumerate(cfg.get("extra_audio", []))]
         self.active = 0
@@ -747,11 +772,30 @@ class Switcher:
             self._attach_audio(s, "aud")
         for s in self.extra_audio:
             self._attach_audio(s, "extra")
+        if self.auto:
+            log("cameras: auto - every USB camera you plug in gets a button")
+            self._scan_cameras()
+            GLib.timeout_add_seconds(RETRY_SECONDS, self._scan_cameras)
         log(f"programme {self.w}x{self.h}@{self.fps} -> {VIDEO_SOCKET}, {AUDIO_SOCKET}")
         try:
             self.loop.run()
         finally:
             self.pipeline.set_state(Gst.State.NULL)
+
+    def _scan_cameras(self):
+        """Add a button for each newly plugged-in USB camera (auto mode)."""
+        known = {s.device for s in self.sources}
+        for path in find_usb_cameras():
+            if path in known:
+                continue
+            spec = {"name": friendly_camera_name(path), "type": "usb",
+                    "device": path, "audio": "auto"}
+            s = Source(len(self.sources), spec)
+            self.sources.append(s)
+            log(f"[{s.name}] found camera {len(self.sources)}: {path}")
+            self._attach_video(s)
+            self._attach_audio(s, "aud")
+        return True
 
     def call_in_main(self, fn, *args, **kwargs):
         """Run fn on the GLib thread and wait for its result."""

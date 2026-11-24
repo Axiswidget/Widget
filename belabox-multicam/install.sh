@@ -24,9 +24,20 @@ echo "== Copying files to /opt/belaswitch"
 mkdir -p /opt/belaswitch/web
 cp belaswitch.py /opt/belaswitch/
 cp web/index.html /opt/belaswitch/web/
-if [ ! -f /etc/belaswitch.json ]; then
-  cp config.example.json /etc/belaswitch.json
-  echo "   created /etc/belaswitch.json - edit it to list your cameras"
+# Default: find USB cameras automatically. An unedited config from an
+# earlier install (still containing REPLACE placeholders) is upgraded too.
+if [ ! -f /etc/belaswitch.json ] || grep -q "REPLACE-with" /etc/belaswitch.json; then
+  [ -f /etc/belaswitch.json ] && cp /etc/belaswitch.json /etc/belaswitch.json.bak
+  cat > /etc/belaswitch.json <<'JSON'
+{
+  "output": { "width": 1920, "height": 1080, "fps": 30 },
+  "transition": { "type": "fade", "duration_ms": 600 },
+  "cameras": "auto"
+}
+JSON
+  echo "   /etc/belaswitch.json: cameras found automatically - just plug them in"
+else
+  echo "   keeping your existing /etc/belaswitch.json"
 fi
 
 echo "== Writing the belacoder pipeline"
@@ -47,5 +58,6 @@ IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "Done."
 echo "  1. Switcher control page:  http://${IP:-<belabox-ip>}:8181/"
-echo "  2. In belaUI, choose the pipeline 'custom/multicam_switcher' and start streaming."
+echo "  2. Plug in your USB cameras and put them in webcam mode - they appear as buttons."
+echo "  3. In belaUI, choose the pipeline 'custom/multicam_switcher' and start streaming."
 echo "  Logs: journalctl -u belaswitch -f"
