@@ -59,10 +59,11 @@ DEFAULT_CONFIG = {
     "transition": {"type": "fade", "duration_ms": 600},
     "audio_follows_video": True,
     "previews": True,
-    # allow: "tailscale" = this box and your Tailscale devices only (default);
-    #        "local" = also private networks (Wi-Fi/hotspot/LAN);
+    # allow: "local" = this box, devices on the same Wi-Fi/hotspot/LAN, and
+    #        your Tailscale devices (default);
+    #        "tailscale" = this box and Tailscale only;
     #        "any" = no restriction
-    "web": {"host": "0.0.0.0", "port": 8181, "allow": "tailscale"},
+    "web": {"host": "0.0.0.0", "port": 8181, "allow": "local"},
     "belacoder_pipelines_dir": None,
     "audio_bitrate": 128000,
     "cameras": [
@@ -1140,7 +1141,7 @@ class Switcher:
 
 def make_handler(sw):
     index_path = os.path.join(HERE, "web", "index.html")
-    allow = sw.cfg.get("web", {}).get("allow", "tailscale")
+    allow = sw.cfg.get("web", {}).get("allow", "local")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -1178,8 +1179,11 @@ def make_handler(sw):
         def _route(self):
             kind = client_kind(self.client_address[0], self.connection.getsockname()[0])
             if not client_allowed(kind, allow):
-                return self._send(403, "This switcher is controlled over Tailscale. Open it from a device "
-                                       "on your tailnet: http://<belabox-tailscale-name>:8181\n",
+                hint = ("Open it from a device on your tailnet: http://<belabox-tailscale-name>:8181"
+                        if allow == "tailscale" else
+                        "Connect this phone to the same Wi-Fi or BELABOX hotspot as the box, "
+                        "or use Tailscale.")
+                return self._send(403, "Not allowed from this network. " + hint + "\n",
                                   "text/plain; charset=utf-8")
             path, p = self._params()
             if path in ("/", "/index.html"):

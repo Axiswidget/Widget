@@ -1,12 +1,12 @@
-# belaswitch: locked design (v1.1)
+# belaswitch: locked design (v1.2)
 
-v1.1 (v1.0 + control over Tailscale only) is the code as of the commit that last changed this paragraph: run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md` to get its hash.
+v1.2 (control from the same Wi-Fi/hotspot, or over Tailscale) is the code as of the commit that last changed this paragraph: run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md` to get its hash.
 
 This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has approved this design and wants it kept.** Fix bugs and adapt to their hardware, but don't redesign, restyle or add features unless they explicitly ask. If a change would alter anything listed under "Locked", ask them first.
 
 ## The owner's setup
 
-- Rock 5T running BELABOX, streaming over bonded cellular with SRTLA. The owner uses **Tailscale** to reach the box.
+- Rock 5T running BELABOX, streaming over bonded cellular with SRTLA. The owner controls it from an iPhone on the same Wi-Fi/hotspot. Tailscale is optional and still supported.
 - Cameras: an **OM System OM-1** and a **DJI Osmo Pocket 3**, both on **USB in webcam mode**. The HDMI input is optional.
 - Audio: **one feed for the whole stream**, either the USB audio device or HDMI audio, chosen on the control page. Never two feeds mixed together, and never the cameras' own mics.
 - Output: **1080p30**. USB webcam modes deliver at most 1080p.
@@ -55,9 +55,9 @@ This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has app
 
 **Tailscale and security.**
 
-* **The page is controlled over Tailscale.** The default `web.allow` is `tailscale`, which allows loopback and Tailscale only; `local` also allows private networks, and `any` allows everything. Refused clients get a plain message pointing to the Tailscale address.
+* **The owner chose no-Tailscale-needed control (v1.2).** The default `web.allow` is `local`, which allows loopback, private networks (Wi-Fi/hotspot/LAN) and Tailscale; `tailscale` allows loopback and Tailscale only; `any` allows everything. Refused clients get a plain message saying how to connect.
 * Tailscale is detected by the connection arriving on one of this machine's own Tailscale addresses (`tailscale ip`, plus addresses on `tailscale*` interfaces), **never by the 100.64.0.0/10 address alone**, because carriers use that range for CGNAT. If Tailscale comes up late, the address cache is refreshed rather than refusing the owner's phone.
-* Previews cycle through low-data (the default over Tailscale: state every 1 s, pictures every 2 s), full and off. Each device remembers its setting, and every state response must include `remote`.
+* Previews cycle through low-data (the default over Tailscale: state every 1 s, pictures every 2 s), full (the default on the local Wi-Fi) and off. Each device remembers its setting, and every state response must include `remote`.
 
 ## Testing changes
 
