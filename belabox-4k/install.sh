@@ -3,6 +3,8 @@
 #   1. removes the multicam switcher, if it was installed
 #   2. raises belaUI's bitrate limit from 12 to 30 Mbps
 #   3. trims belaUI's pipeline list to the 4K / 1440p HDMI pipelines
+#   4. adds friendly connection names and a "what can my connections
+#      carry?" bitrate suggestion to belaUI's page
 # Every step can be undone; see README.md.   Run:  sudo ./install.sh
 set -e
 cd "$(dirname "$0")"
@@ -27,6 +29,9 @@ echo "== 2. belaUI bitrate limit"
 
 echo "== 3. belaUI pipeline list"
 ./belaui-pipelines.sh || echo "   (skipped - see the message above)"
+
+echo "== 4. belaUI add-on: connection names + 'What can my connections carry?'"
+./belaui-addon.sh || echo "   (skipped - see the message above)"
 
 systemctl restart belaUI 2>/dev/null || true
 echo

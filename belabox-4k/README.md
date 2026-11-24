@@ -4,7 +4,9 @@ Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABO
 
 1. **Bitrate limit 12 → 30 Mbps.** belaUI caps the bitrate slider at 12 Mbps. BELABOX's encoder (belacoder) already accepts up to 30 Mbps, so only belaUI is changed: exactly two numbers, with backups.
 2. **A tidy pipeline list.** belaUI shows only the 4K and 1440p HDMI pipelines. Cam Link, USB, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
-3. **Removes the old multicam switcher** if it was installed.
+3. **Named connections.** belaUI's connection list shows names like **Ethernet**, **iPhone hotspot** or **EE 5G**, with the signal strength underneath. Tap a name to set your own; each phone or browser remembers its own names.
+4. **"What can my connections carry?"** Under the connection list, while streaming, it shows what your connections are sending, the best they managed in the last 2 minutes, a **suggested max bitrate** (80% of that best) with a **Use** button, and the **best resolution** for it (4K / 1440p / 1080p). If your connections keep up with your max, it tells you that instead. The suggestion needs about 20 s of streaming, and it only changes anything when you press **Use**.
+5. **Removes the old multicam switcher** if it was installed.
 
 ## Install (Windows laptop)
 
@@ -34,8 +36,9 @@ Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABO
 cd ~/Widget/belabox-4k
 sudo ./belaui-pipelines.sh --restore   # show all pipelines again
 sudo ./belaui-bitrate.sh --revert      # back to the 12 Mbps limit
+sudo ./belaui-addon.sh --revert        # remove the names / bitrate suggestion
 ```
 
 ## After a BELABOX update
 
-An update can put the 12 Mbps limit and the full pipeline list back. Run step 3 of *Install* again. Your choices in belaUI are kept.
+An update can put the 12 Mbps limit and the full pipeline list back, and remove the add-on. Run step 3 of *Install* again. Your choices in belaUI are kept.
