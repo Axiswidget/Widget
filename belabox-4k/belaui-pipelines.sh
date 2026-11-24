@@ -1,12 +1,13 @@
 #!/bin/sh
-# Trim belaUI's pipeline list to the 4K / 1440p HDMI pipelines.
+# Trim belaUI's pipeline list to the 4K / 1440p HDMI pipelines and the
+# USB-camera pipelines for the DJI Osmo Pocket 3.
 #
 # The other pipelines (Cam Link, USB, test pattern, 1080p, 720p, RTMP/SRT
 # relays, generic x264...) are moved, not deleted, to a "hidden" folder next
 # to BELABOX's pipelines, so they can be brought back at any time. The
 # pipeline currently selected in belaUI is always kept.
 #
-#   sudo ./belaui-pipelines.sh            # keep only the 4K / 1440p HDMI ones
+#   sudo ./belaui-pipelines.sh            # keep only the 4K / 1440p HDMI + Pocket 3 ones
 #   sudo ./belaui-pipelines.sh --restore  # bring every pipeline back
 #
 # A BELABOX update may bring the hidden pipelines back; just run it again.
@@ -26,6 +27,11 @@ KEEP = {                      # the pipelines worth showing for 4K / 1440p HDMI
     "h265_hdmi_4k_2160p30",   # forced 30 fps
     "h265_hdmi_1440p",        # 4K camera scaled to 1440p in hardware        <- best 1440p
     "h265_hdmi_1440p30",
+    # USB cameras that send H.264/H.265 (DJI Osmo Pocket 3 in webcam mode)
+    "h265_libuvch264_4k_2160p30",   # Pocket 3 in 4K30                       <- best
+    "h265_libuvch264_1440p60",      # Pocket 3 scaled to 1440p in hardware
+    "h265_libuvch264",              # whatever mode the camera sends
+    "h265_usb_mjpeg",               # fallback for USB cameras sending MJPEG
 }
 
 def load(p):
@@ -57,6 +63,16 @@ if arg == "--restore":
     print(f"restored {n} pipeline(s)")
     sys.exit(0 if n else 3)
 
+# bring back any kept pipeline hidden by an earlier run (the keep list grows)
+brought = 0
+for f in KEEP:
+    src = os.path.join(hidden, hw, f)
+    dst = os.path.join(pdir, hw, f)
+    if os.path.exists(src) and not os.path.exists(dst):
+        shutil.move(src, dst)
+        print(f"brought back {hw}/{f}")
+        brought += 1
+
 selected = load(os.path.join(ui, "config.json")).get("pipeline")
 moved, kept = 0, []
 for group in (hw, "generic"):
@@ -80,7 +96,7 @@ custom = os.path.join(pdir, "custom")
 for f in sorted(os.listdir(custom)) if os.path.isdir(custom) else []:
     print("   custom/" + f)
 print(f"hidden {moved} other pipeline(s) in {hidden}" if moved else "nothing else to hide")
-sys.exit(0 if moved else 3)
+sys.exit(0 if (moved or brought) else 3)   # 0 = list changed: restart belaUI
 PY
 case $rc in
   0) systemctl restart belaUI 2>/dev/null || true; echo "belaUI restarted - reload its page." ;;

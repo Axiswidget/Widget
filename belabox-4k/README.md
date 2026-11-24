@@ -3,7 +3,7 @@
 Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABOX:
 
 1. **Bitrate limit 12 → 30 Mbps.** belaUI caps the bitrate slider at 12 Mbps. BELABOX's encoder (belacoder) already accepts up to 30 Mbps, so only belaUI is changed: exactly two numbers, with backups.
-2. **A tidy pipeline list.** belaUI shows only the 4K and 1440p HDMI pipelines. Cam Link, USB, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
+2. **A tidy pipeline list.** belaUI shows only the 4K and 1440p **HDMI** pipelines and the **USB** pipelines for the **DJI Osmo Pocket 3**. Cam Link, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
 3. **Named connections.** belaUI's connection list shows names like **Ethernet**, **iPhone hotspot** or **EE 5G**, with the signal strength underneath. Tap a name to set your own; each phone or browser remembers its own names.
 4. **"What can my connections carry?"** Under the connection list, while streaming, it shows what your connections are sending, the best they managed in the last 2 minutes, a **suggested max bitrate** (80% of that best) with a **Use** button, and the **best resolution** for it (4K / 1440p / 1080p). If your connections keep up with your max, it tells you that instead. The suggestion needs about 20 s of streaming, and it only changes anything when you press **Use**.
 5. **Removes the old multicam switcher** if it was installed.
@@ -17,6 +17,19 @@ Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABO
    rm -rf ~/Widget; git clone -b claude/rock5t-multicam-switcher-rpbzrz https://github.com/Axiswidget/Widget && cd Widget/belabox-4k && sudo ./install.sh
    ```
 4. Reload belaUI. The bitrate slider now goes to 30 Mbps, and the pipeline list is short.
+
+## Which pipeline?
+
+| Camera | Pipeline |
+|---|---|
+| HDMI camera, 4K | `rk3588/h265_hdmi_4k_2160p` |
+| HDMI camera, 1440p | `rk3588/h265_hdmi_1440p` |
+| **DJI Pocket 3 on USB**, 4K30 | `rk3588/h265_libuvch264_4k_2160p30` |
+| DJI Pocket 3 on USB, 1440p | `rk3588/h265_libuvch264_1440p60` |
+| DJI Pocket 3, any mode it sends | `rk3588/h265_libuvch264` |
+| other USB camera sending MJPEG | `rk3588/h265_usb_mjpeg` |
+
+For the Pocket 3, put it in **webcam (USB streaming) mode** when you plug it in. Its microphone appears in belaUI's audio source list as **DJIPocket3**.
 
 ## Best 4K quality: settings that actually help
 
