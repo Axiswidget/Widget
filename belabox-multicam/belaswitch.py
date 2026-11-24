@@ -1153,12 +1153,14 @@ def make_handler(sw):
             if path in ("/", "/index.html"):
                 with open(index_path, "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
-            if path == "/api/state":
+            def state():
                 st = sw.state()
                 # Over Tailscale the page's traffic shares the cellular
                 # uplink with the stream, so the page goes into low-data mode.
                 st["remote"] = kind == "tailscale"
-                return self._send(200, st)
+                return st
+            if path == "/api/state":
+                return self._send(200, state())
             if path in ("/api/switch", "/api/cut", "/api/fade"):
                 try:
                     cam = int(p["cam"]) - 1   # 1-based in the API, like the buttons
@@ -1166,10 +1168,10 @@ def make_handler(sw):
                     return self._send(400, {"error": "cam (1..N) required"})
                 tr = {"/api/cut": "cut", "/api/fade": "fade"}.get(path, p.get("transition"))
                 ok = sw.call_in_main(sw.switch, cam, tr, p.get("duration_ms"))
-                return self._send(200 if ok else 400, sw.state())
+                return self._send(200 if ok else 400, state())
             if path == "/api/audio":
                 ok = sw.call_in_main(sw.select_audio, p.get("source", ""))
-                return self._send(200 if ok else 400, sw.state())
+                return self._send(200 if ok else 400, state())
             if path == "/api/settings":
                 def apply():
                     if p.get("transition") in ("fade", "cut"):
@@ -1177,7 +1179,7 @@ def make_handler(sw):
                     if "duration_ms" in p:
                         sw.duration_ms = max(0, min(5000, int(p["duration_ms"])))
                 sw.call_in_main(apply)
-                return self._send(200, sw.state())
+                return self._send(200, state())
             if path.startswith("/preview/") and path.endswith(".jpg"):
                 key = path[len("/preview/"):-4]
                 data = sw.program_preview if key == "program" else None
