@@ -251,6 +251,7 @@ def describe_caps(caps):
 
 
 BY_ID_DIR = "/dev/v4l/by-id"
+HDMI_DEVICE = "/dev/hdmirx"      # the Rock 5's HDMI input (BELABOX's udev name)
 
 
 def friendly_camera_name(by_id_path):
@@ -748,7 +749,11 @@ class Switcher:
             return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! video/x-h264{caps_extra} ! "
                     f"h264parse ! queue max-size-buffers=4 leaky=downstream ! {dec}")
         if kind == "v4l2":
-            return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! video/x-raw{caps_extra} ! "
+            # Like BELABOX's own HDMI pipelines: drop frames the HDMI
+            # receiver marks as damaged (they show up as glitches).
+            drop = (" ! identity drop-buffer-flags=GST_BUFFER_FLAG_DROPPABLE"
+                    if os.path.realpath(dev) == os.path.realpath(HDMI_DEVICE) else "")
+            return (f"v4l2src device={gst_quote(dev)} do-timestamp=true ! video/x-raw{caps_extra}{drop} ! "
                     "queue max-size-buffers=2 leaky=downstream")
         if kind == "custom":
             return spec["pipeline"]
@@ -1304,14 +1309,24 @@ class Switcher:
         return True
 
     def _scan_cameras(self):
-        """Add a button for each newly plugged-in USB camera (auto mode)."""
+        """Add a button for the HDMI input and each USB camera (auto mode)."""
         known = {s.device for s in self.sources}
+        found = []
+        if os.path.exists(HDMI_DEVICE):
+            # The HDMI input always exists on a Rock 5; it shows "waiting"
+            # until a camera with an HDMI signal is connected.
+            spec = {"name": "HDMI", "type": "v4l2", "device": HDMI_DEVICE}
+            if self.audio_source == "camera":
+                spec["audio"] = self.cfg.get("hdmi_audio_device", "hw:CARD=rockchiphdmiin")
+            found.append((HDMI_DEVICE, spec))
         for path in find_usb_cameras():
-            if path in known:
-                continue
             spec = {"name": friendly_camera_name(path), "type": "usb", "device": path}
             if self.audio_source == "camera":
                 spec["audio"] = "auto"
+            found.append((path, spec))
+        for path, spec in found:
+            if path in known:
+                continue
             s = Source(len(self.sources), spec)
             self.sources.append(s)
             log(f"[{s.name}] found camera {len(self.sources)}: {path}")

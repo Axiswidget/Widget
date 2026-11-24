@@ -29,7 +29,7 @@ This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has app
 
 **Zero-config install.** The installer writes `"cameras": "auto"` and `"audio_source": "usb"`.
 
-* Auto mode gives every `/dev/v4l/by-id/*-video-index0` device its own button, including cameras plugged in later.
+* Auto mode gives the Rock 5's HDMI input (`/dev/hdmirx`, when present) and every `/dev/v4l/by-id/*-video-index0` device their own buttons, including cameras plugged in later. HDMI shows "waiting" until it has a signal. Like BELABOX's stock HDMI pipelines, HDMI frames flagged DROPPABLE (damaged) are dropped.
 * `"type": "usb"` lists the camera's modes (`list_modes`). In Auto mode (`pick_from_modes`) it prefers: the output size (or the next size down); then the output frame rate, then an exact multiple (60 for 30), then near rates (29.97); then RAW (uncompressed) over MJPEG over H.264.
 
 **Quality (v1.3).**

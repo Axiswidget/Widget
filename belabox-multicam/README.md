@@ -58,7 +58,7 @@ Then:
 
 ## Configuring cameras
 
-By default the installer sets `"cameras": "auto"`. Every USB camera that is plugged in (or plugged in later) gets a button, named after the camera, with its own sound. Buttons are numbered in the order the cameras are found. To choose names or the order yourself, or to add the HDMI input, replace `"auto"` with a list as shown below.
+By default the installer sets `"cameras": "auto"`. The Rock 5's **HDMI input** gets a button (it shows "waiting" until an HDMI camera with a signal is connected), and every USB camera that is plugged in (or plugged in later) gets a button, named after the camera, with its own sound. Buttons are numbered in the order the cameras are found. To choose names or the order yourself, or to add the HDMI input, replace `"auto"` with a list as shown below.
 
 `/etc/belaswitch.json`:
 
