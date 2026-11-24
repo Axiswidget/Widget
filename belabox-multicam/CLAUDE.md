@@ -1,5 +1,7 @@
 # belaswitch: locked design (v1.0)
 
+v1.0 is the code as of the commit that last changed this paragraph: run `git log -1 --format=%h -- belabox-multicam/CLAUDE.md` to get its hash.
+
 This is a simple multicam switcher for BELABOX on a Rock 5T. **The owner has approved this design and wants it kept.** Fix bugs and adapt to their hardware, but don't redesign, restyle or add features unless they explicitly ask. If a change would alter anything listed under "Locked", ask them first.
 
 ## The owner's setup
