@@ -14,9 +14,9 @@
       "audio": "auto"
     },
     {
-      "name": "Pocket",
+      "name": "Pocket 3",
       "type": "usb",
-      "device": "/dev/v4l/by-id/REPLACE-with-DJI-entry-video-index0",
+      "device": "/dev/v4l/by-id/REPLACE-with-DJI-Pocket-3-entry-video-index0",
       "audio": "auto"
     },
     {

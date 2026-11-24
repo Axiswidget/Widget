@@ -51,7 +51,7 @@ Then:
 | Camera field | Meaning |
 |---|---|
 | `name` | Label on the button |
-| `type` | **`usb` for USB cameras in webcam mode** (OM-1, DJI Pocket, webcams, capture cards). It asks the camera which modes it supports and picks the best one: output size and frame rate if offered, MJPEG over raw, and H.264 as a fallback. The choice is logged. `v4l2` for raw capture such as the Rock 5 HDMI-in. `mjpeg` for most cheap USB capture cards and webcams, decoded in hardware with `mppjpegdec` when it is available. `test` for a test pattern. `custom` for any GStreamer source fragment in `"pipeline"` |
+| `type` | **`usb` for USB cameras in webcam mode** (OM-1, DJI Pocket 3, webcams, capture cards). It asks the camera which modes it supports and picks the best one: output size and frame rate if offered, MJPEG over raw, and H.264 as a fallback. The choice is logged. `v4l2` for raw capture such as the Rock 5 HDMI-in. `mjpeg` for most cheap USB capture cards and webcams, decoded in hardware with `mppjpegdec` when it is available. `test` for a test pattern. `custom` for any GStreamer source fragment in `"pipeline"` |
 | `device` | Video device. **For USB devices, use the `/dev/v4l/by-id/...` path.** `/dev/videoN` numbers change between boots |
 | `width`/`height`/`fps` | Mode to request from the camera (optional). The switcher scales every camera to `output` |
 | `audio` | Sound for this camera (optional). `"auto"` finds the USB camera's own microphone or audio input. Otherwise give an ALSA device: run `arecord -l`, then use `hw:CARD=<name>` with the name in brackets |
@@ -72,9 +72,9 @@ Then:
   "pipeline": "srtsrc uri=srt://:4001?mode=listener ! tsdemux ! h264parse ! mppvideodec" }
 ```
 
-## Example: OM-1 + DJI Pocket over USB (+ optional HDMI)
+## Example: OM-1 + DJI Pocket 3 over USB (+ optional HDMI)
 
-`config.example.json` is set up for this. Each camera becomes a button: 1 = OM-1, 2 = Pocket, 3 = HDMI. Any camera that isn't connected just shows as offline until it is.
+`config.example.json` is set up for this. Each camera becomes a button: 1 = OM-1, 2 = Pocket 3, 3 = HDMI. Any camera that isn't connected just shows as offline until it is.
 
 1. Put both cameras in **USB webcam / USB streaming mode**. When you plug in the USB cable, each camera asks which USB mode to use; pick the webcam or streaming option (the wording varies by model and firmware). Mass-storage or charging-only modes don't provide video.
 2. On the BELABOX, run `ls /dev/v4l/by-id/`. Each camera has an entry ending in `-video-index0`. Copy those paths into `device`. Unlike `/dev/videoN`, they don't change when you replug.
