@@ -5,7 +5,8 @@
 #   3. trims belaUI's pipeline list to the 4K / 1440p HDMI pipelines
 #   4. adds friendly connection names and a "what can my connections
 #      carry?" bitrate suggestion to belaUI's page
-#   5. soft start: each stream / reconnect starts at 4 Mbps, then climbs
+#   5. guardian: each stream / reconnect starts gently; after a drop it caps
+#      the bitrate at what the connections carried, then raises it again
 # Every step can be undone; see README.md.   Run:  sudo ./install.sh
 set -e
 cd "$(dirname "$0")"
@@ -34,13 +35,18 @@ echo "== 3. belaUI pipeline list"
 echo "== 4. belaUI add-on: connection names + 'What can my connections carry?'"
 ./belaui-addon.sh || echo "   (skipped - see the message above)"
 
-echo "== 5. Soft start: every stream and reconnect starts gently, then climbs"
-mkdir -p /opt/belabox-softstart
-cp softstart/belabox-softstart.py /opt/belabox-softstart/
-cp softstart/belabox-softstart.service /etc/systemd/system/
+echo "== 5. Guardian: soft start, learns from drops, recovers on its own"
+# replaces the earlier soft start helper
+if [ -f /etc/systemd/system/belabox-softstart.service ]; then
+  systemctl disable --now belabox-softstart 2>/dev/null || true
+  rm -rf /etc/systemd/system/belabox-softstart.service /opt/belabox-softstart
+fi
+mkdir -p /opt/belabox-guardian
+cp guardian/belabox-guardian.py /opt/belabox-guardian/
+cp guardian/belabox-guardian.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable belabox-softstart >/dev/null 2>&1 || true
-systemctl restart belabox-softstart
+systemctl enable belabox-guardian >/dev/null 2>&1 || true
+systemctl restart belabox-guardian
 echo "   running"
 
 systemctl restart belaUI 2>/dev/null || true

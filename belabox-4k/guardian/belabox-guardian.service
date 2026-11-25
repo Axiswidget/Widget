@@ -1,0 +1,11 @@
+[Unit]
+Description=BELABOX guardian (soft start, learns from drops, recovers on its own)
+After=belaUI.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/belabox-guardian/belabox-guardian.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

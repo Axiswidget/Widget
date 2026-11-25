@@ -120,15 +120,35 @@
     return '1080p';
   }
 
+  // guardian status (written by the belabox-guardian service)
+  let guardian = null, guardianFetched = 0;
+  function pollGuardian() {
+    if (Date.now() - guardianFetched < 5000) return;
+    guardianFetched = Date.now();
+    fetch('/belabox-guardian.json?t=' + Date.now(), { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null)).then((g) => { guardian = g; }).catch(() => { guardian = null; });
+  }
+  function guardianRow(row) {
+    if (!guardian || !guardian.running) return '';
+    if (!guardian.cap_kbps) {
+      return row('Auto-protect', guardian.drops ? `On · ${guardian.drops} fixed` : 'On');
+    }
+    const mins = guardian.next_raise_in_s != null ? Math.ceil(guardian.next_raise_in_s / 60) : null;
+    return row('Auto-protect', `${fmt(guardian.cap_kbps)} cap`) +
+      `<div class="bb4k-note">After a drop at ${guardian.last_drop || '?'}` +
+      (mins != null ? ` · back up in ${mins} min` : '') + '</div>';
+  }
+
   function updateCapacity(totalKbps) {
     const p = ensurePanel();
+    pollGuardian();
     const streaming = (typeof isStreaming !== 'undefined') && isStreaming;
     const now = Date.now();
     const head = '<div class="bb4k-title">What can my connections carry?</div>';
     const row = (k, v) => `<div class="bb4k-row"><span>${k}</span><strong>${v}</strong></div>`;
     if (!streaming) {
       samples = []; streamStart = 0;
-      p.html(head + '<div class="bb4k-note">Start the stream to measure.</div>');
+      p.html(head + '<div class="bb4k-note">Start the stream to measure.</div>' + guardianRow(row));
       return;
     }
     if (!streamStart) streamStart = now;
@@ -136,13 +156,13 @@
     samples = samples.filter((s) => now - s.t <= WINDOW_S * 1000);
     const secs = Math.round((now - streamStart) / 1000);
     if (secs < MIN_MEASURE_S) {
-      p.html(head + `<div class="bb4k-note">Measuring… ${secs} / ${MIN_MEASURE_S} s</div>`);
+      p.html(head + `<div class="bb4k-note">Measuring… ${secs} / ${MIN_MEASURE_S} s</div>` + guardianRow(row));
       return;
     }
     const peak = Math.max(...samples.map((s) => s.kbps));
     const maxBr = currentMax();
     const rounded = (v) => Math.max(500, Math.floor(v / 250) * 250);
-    let html = head + row('Sending now', fmt(totalKbps)) + row('Best in last 2 min', fmt(peak));
+    let html = head + row('Sending now', fmt(totalKbps)) + row('Best in last 2 min', fmt(peak)) + guardianRow(row);
     if (maxBr && peak >= 0.9 * maxBr) {
       html += row('Best resolution', resolutionFor(maxBr)) +
               `<div class="bb4k-note">Your connections kept up with your max bitrate (${fmt(maxBr)}). ` +

@@ -6,7 +6,12 @@ Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABO
 2. **A tidy pipeline list.** belaUI shows just four pipelines: **HDMI 4K, HDMI 1440p, USB 4K and USB 1440p** (USB = DJI Osmo Pocket 3). Cam Link, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
 3. **Named connections.** belaUI's connection list shows names like **Ethernet**, **iPhone hotspot** or **EE 5G**, with the signal strength underneath. Tap a name to set your own; each phone or browser remembers its own names.
 4. **"What can my connections carry?"** Under the connection list, while streaming, it shows what your connections are sending, the best they managed in the last 2 minutes, a **suggested max bitrate** (80% of that best) with a **Use** button, and the **best resolution** for it (4K / 1440p / 1080p). If your connections keep up with your max, it tells you that instead. The suggestion needs about 20 s of streaming, and it only changes anything when you press **Use**.
-5. **Soft start (reliability).** BELABOX's encoder starts every stream, and every automatic reconnect, at the **max** bitrate. If that's more than the connections can carry, the start overloads them, the SRT connection fails, and the stream goes blank and restarts in a loop. A small helper (`belabox-softstart` service) makes each start begin at **4 Mbps**, then puts your max back after 6 s. The encoder then climbs to it on its own, only while the connection stays stable. It uses the same bitrate file and reload signal as belaUI's slider, waits until the encoder is ready for that signal, and always restores your max. If the helper isn't running, BELABOX behaves exactly as stock.
+5. **Guardian (reliability, automatic).** Runs on its own, with nothing to set:
+   * **Soft start:** every stream, and every automatic reconnect, starts at 4 Mbps and climbs to your max over 6 s. It never starts by overloading the connections. BELABOX's encoder normally starts at the max, which is what caused repeated blank screens.
+   * **Learns from drops:** if the stream drops anyway, it caps the bitrate at 80% of what your connections were actually carrying, so it stops overloading them.
+   * **Recovers:** after every 3 minutes without a drop it raises the cap by 15%, back up to your max. This suits walking, where signal changes every few minutes.
+   * **Your choice wins:** moving the bitrate slider, or pressing Start, clears the cap.
+   * The add-on panel shows it as **Auto-protect**. It uses the same bitrate file and reload signal as belaUI's slider, always restores your max, and if it isn't running BELABOX behaves exactly as stock.
 6. **Removes the old multicam switcher** if it was installed.
 
 ## Install (Windows laptop)
@@ -44,6 +49,18 @@ For the Pocket 3, put it in **webcam (USB streaming) mode** when you plug it in.
 | **In-camera sharpening / noise** | sharpening **low**, noise reduction **on** | Noise and over-sharpening waste bitrate and turn into blocky artifacts in motion |
 | **Audio codec** | Opus | Better quality than AAC at the same bitrate |
 
+## Walking with patchy signal: simple setup
+
+| Setting | Set to |
+|---|---|
+| Pipeline | `h265_hdmi_4k_2160p` (or USB 4K for the Pocket 3) |
+| Max bitrate | **20000**. The guardian lowers it automatically when the signal can't carry it, and raises it again when it can |
+| SRT latency | **3000 ms**, so short dips don't show |
+| Connections | **two or more, on different networks** |
+| OBS | a **"Be right back" scene** that switches on automatically (e.g. NOALBS), for when the signal is truly gone |
+
+If *Best resolution* in the panel keeps saying **1440p**, your connections are below about 18 Mbps, and 1440p will look sharper than 4K there.
+
 ## Reliability checklist
 
 | | Do this | Why |
@@ -64,7 +81,7 @@ cd ~/Widget/belabox-4k
 sudo ./belaui-pipelines.sh --restore   # show all pipelines again
 sudo ./belaui-bitrate.sh --revert      # back to the 12 Mbps limit
 sudo ./belaui-addon.sh --revert        # remove the names / bitrate suggestion
-sudo systemctl disable --now belabox-softstart   # turn soft start off
+sudo systemctl disable --now belabox-guardian    # turn the guardian off
 ```
 
 ## After a BELABOX update
