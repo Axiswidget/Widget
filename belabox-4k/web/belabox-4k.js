@@ -114,10 +114,12 @@
     try { return $('#bitrateSlider').slider('value'); } catch (e) { return null; }
   }
 
-  function resolutionFor(videoKbps) {
-    if (videoKbps >= 18000) return '4K';
-    if (videoKbps >= 9000) return '1440p';
-    return '1080p';
+  // how good 4K looks at a given bitrate (H.265, 30 fps; rule of thumb)
+  function quality4k(kbps) {
+    if (kbps >= 18000) return 'Excellent';
+    if (kbps >= 12000) return 'Good';
+    if (kbps >= 8000) return 'Fair · softer in motion';
+    return 'Low · add connections';
   }
 
   // guardian status (written by the belabox-guardian service)
@@ -164,12 +166,12 @@
     const rounded = (v) => Math.max(500, Math.floor(v / 250) * 250);
     let html = head + row('Sending now', fmt(totalKbps)) + row('Best in last 2 min', fmt(peak)) + guardianRow(row);
     if (maxBr && peak >= 0.9 * maxBr) {
-      html += row('Best resolution', resolutionFor(maxBr)) +
+      html += row('4K quality', quality4k(maxBr)) +
               `<div class="bb4k-note">Your connections kept up with your max bitrate (${fmt(maxBr)}). ` +
               `They may carry more: raise it in small steps and watch for drops.</div>`;
     } else {
       const suggest = rounded(peak * 0.8);
-      html += row('Suggested max bitrate', `${suggest} Kbps`) + row('Best resolution', resolutionFor(suggest)) +
+      html += row('Suggested max bitrate', `${suggest} Kbps`) + row('4K quality', quality4k(suggest)) +
               (maxBr && suggest < maxBr - 250
                 ? `<button type="button" class="btn btn-primary btn-block mt-2" id="bb4k-use">Use ${suggest} Kbps</button>` : '');
       p.html(html);

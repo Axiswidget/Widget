@@ -1,13 +1,13 @@
 #!/bin/sh
-# Trim belaUI's pipeline list to the 4K / 1440p HDMI pipelines and the
-# USB-camera pipelines for the DJI Osmo Pocket 3.
+# Trim belaUI's pipeline list to the two 4K pipelines: HDMI 4K and USB 4K
+# (DJI Osmo Pocket 3).
 #
 # The other pipelines (Cam Link, USB, test pattern, 1080p, 720p, RTMP/SRT
 # relays, generic x264...) are moved, not deleted, to a "hidden" folder next
 # to BELABOX's pipelines, so they can be brought back at any time. The
 # pipeline currently selected in belaUI is always kept.
 #
-#   sudo ./belaui-pipelines.sh            # keep only HDMI 4K/1440p and USB 4K/1440p
+#   sudo ./belaui-pipelines.sh            # keep only HDMI 4K and USB 4K
 #   sudo ./belaui-pipelines.sh --restore  # bring every pipeline back
 #
 # A BELABOX update may bring the hidden pipelines back; just run it again.
@@ -22,11 +22,9 @@ python3 - "$UI" "${1:-}" <<'PY' || rc=$?
 import hashlib, json, os, shutil, sys
 
 ui, arg = sys.argv[1], sys.argv[2]
-KEEP = {                      # just four: HDMI and USB, 4K and 1440p
-    "h265_hdmi_4k_2160p",           # HDMI 4K  (camera's own frame rate, keyframe every 4 s)
-    "h265_hdmi_1440p",              # HDMI 1440p (4K camera scaled in hardware)
-    "h265_libuvch264_4k_2160p30",   # USB 4K   (DJI Pocket 3 in webcam mode)
-    "h265_libuvch264_1440p60",      # USB 1440p (scaled in hardware)
+KEEP = {                      # 4K only: HDMI and USB
+    "h265_hdmi_4k_2160p",           # HDMI 4K (camera's own frame rate, keyframe every 4 s)
+    "h265_libuvch264_4k_2160p30",   # USB 4K  (DJI Pocket 3 in webcam mode)
 }
 
 def load(p):

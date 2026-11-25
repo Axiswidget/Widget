@@ -1,11 +1,11 @@
 # BELABOX 4K tweaks (Rock 5T, HDMI camera)
 
-Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABOX:
+Small, reversible tweaks for streaming **4K** with BELABOX (HDMI camera or DJI Pocket 3 on USB):
 
 1. **Bitrate limit 12 → 30 Mbps.** belaUI caps the bitrate slider at 12 Mbps. BELABOX's encoder (belacoder) already accepts up to 30 Mbps, so only belaUI is changed: exactly two numbers, with backups.
-2. **A tidy pipeline list.** belaUI shows just four pipelines: **HDMI 4K, HDMI 1440p, USB 4K and USB 1440p** (USB = DJI Osmo Pocket 3). Cam Link, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
+2. **A tidy pipeline list.** belaUI shows just two pipelines: **HDMI 4K** and **USB 4K** (USB = DJI Osmo Pocket 3). Cam Link, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
 3. **Named connections.** belaUI's connection list shows names like **Ethernet**, **iPhone hotspot** or **EE 5G**, with the signal strength underneath. Tap a name to set your own; each phone or browser remembers its own names.
-4. **"What can my connections carry?"** Under the connection list, while streaming, it shows what your connections are sending, the best they managed in the last 2 minutes, a **suggested max bitrate** (80% of that best) with a **Use** button, and the **best resolution** for it (4K / 1440p / 1080p). If your connections keep up with your max, it tells you that instead. The suggestion needs about 20 s of streaming, and it only changes anything when you press **Use**.
+4. **"What can my connections carry?"** Under the connection list, while streaming, it shows what your connections are sending, the best they managed in the last 2 minutes, a **suggested max bitrate** (80% of that best) with a **Use** button, and how good **4K** will look at that bitrate (Excellent 18+ Mbps · Good 12–18 · Fair 8–12 · Low under 8). If your connections keep up with your max, it tells you that instead. The suggestion needs about 20 s of streaming, and it only changes anything when you press **Use**.
 5. **Guardian (reliability, automatic).** Runs on its own, with nothing to set:
    * **Soft start:** every stream, and every automatic reconnect, starts at 4 Mbps and climbs to your max over 6 s. It never starts by overloading the connections. BELABOX's encoder normally starts at the max, which is what caused repeated blank screens.
    * **Learns from drops:** if the stream drops anyway, it caps the bitrate at 80% of what your connections were actually carrying, so it stops overloading them.
@@ -29,11 +29,9 @@ Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABO
 | Camera | Pipeline |
 |---|---|
 | **HDMI 4K** | `rk3588/h265_hdmi_4k_2160p` |
-| **HDMI 1440p** | `rk3588/h265_hdmi_1440p` |
 | **USB 4K** (DJI Pocket 3) | `rk3588/h265_libuvch264_4k_2160p30` |
-| **USB 1440p** (DJI Pocket 3) | `rk3588/h265_libuvch264_1440p60` |
 
-Only these four are shown (plus whichever pipeline you had selected, so it never disappears from under you). Everything else is in `pipelines-hidden`; `sudo ./belaui-pipelines.sh --restore` brings it all back, e.g. if the Pocket 3's 4K mode won't start and you want the `h265_libuvch264` fallback.
+Only these two are shown (plus whichever pipeline you had selected, so it never disappears). `sudo ./belaui-pipelines.sh --restore` brings back all the others.
 
 For the Pocket 3, put it in **webcam (USB streaming) mode** when you plug it in. Its microphone appears in belaUI's audio source list as **DJIPocket3**.
 
@@ -41,9 +39,9 @@ For the Pocket 3, put it in **webcam (USB streaming) mode** when you plug it in.
 
 | Setting | Use | Why |
 |---|---|---|
-| **Pipeline** | `rk3588/h265_hdmi_4k_2160p` (no number), or `rk3588/h265_hdmi_1440p` | Passes the camera's frames through **untouched** and sends a full keyframe every **4 s** instead of every 2 s. That leaves more bits for picture detail at the same bitrate. The `…p30` pipelines force 30 fps; with a camera that sends 29.97 fps, that repeats a frame about every 33 s, a tiny stutter |
+| **Pipeline** | `rk3588/h265_hdmi_4k_2160p` (no number), or USB 4K for the Pocket 3 | Passes the camera's frames through **untouched** and sends a full keyframe every **4 s** instead of every 2 s. That leaves more bits for picture detail at the same bitrate. The `…p30` pipelines force 30 fps; with a camera that sends 29.97 fps, that repeats a frame about every 33 s, a tiny stutter |
 | **Bitrate (max)** | as high as your links can carry: **15–25 Mbps** for 4K | 4K30 H.265 usually needs roughly 15–25 Mbps to look clean in motion (rule of thumb, scene dependent). belacoder lowers it automatically when the links can't keep up, so a high maximum is safe |
-| **1440p instead of 4K** | when the links can't sustain about 15 Mbps | At the same bitrate, 1440p usually shows fewer compression artifacts than 4K. The Rock 5T scales the 4K camera down in hardware |
+| **More connections** | 2–3 SIMs on different networks | 4K looks best at 18+ Mbps. More connections is the way to get there, and to keep it when one network is weak |
 | **SRT latency** | higher, e.g. **2000 ms or more** | Gives SRT more time to re-send lost packets, so you get fewer glitches on cellular. The trade-off is more delay |
 | **Camera HDMI output** | 4K 29.97/30p, **clean HDMI** (no on-screen overlays), YCbCr | Overlays end up in the stream, and RGB costs extra conversion |
 | **In-camera sharpening / noise** | sharpening **low**, noise reduction **on** | Noise and over-sharpening waste bitrate and turn into blocky artifacts in motion |
@@ -53,13 +51,13 @@ For the Pocket 3, put it in **webcam (USB streaming) mode** when you plug it in.
 
 | Setting | Set to |
 |---|---|
-| Pipeline | `h265_hdmi_4k_2160p` (or USB 4K for the Pocket 3) |
+| Pipeline | **HDMI 4K** `h265_hdmi_4k_2160p`, or **USB 4K** `h265_libuvch264_4k_2160p30` for the Pocket 3 |
 | Max bitrate | **20000**. The guardian lowers it automatically when the signal can't carry it, and raises it again when it can |
 | SRT latency | **3000 ms**, so short dips don't show |
 | Connections | **two or more, on different networks** |
 | OBS | a **"Be right back" scene** that switches on automatically (e.g. NOALBS), for when the signal is truly gone |
 
-If *Best resolution* in the panel keeps saying **1440p**, your connections are below about 18 Mbps, and 1440p will look sharper than 4K there.
+The panel's **4K quality** line tells you how good the picture is at what your connections carry: **Excellent** at 18+ Mbps, **Good** at 12–18, **Fair** at 8–12, **Low** under 8. If it often says Fair or Low, add a connection.
 
 ## Reliability checklist
 

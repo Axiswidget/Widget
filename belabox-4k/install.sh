@@ -1,8 +1,8 @@
 #!/bin/sh
-# BELABOX 4K tweaks for a Rock 5T streaming a 4K / 1440p HDMI camera:
+# BELABOX 4K tweaks for a Rock 5T streaming 4K (HDMI camera or DJI Pocket 3 on USB):
 #   1. removes the multicam switcher, if it was installed
 #   2. raises belaUI's bitrate limit from 12 to 30 Mbps
-#   3. trims belaUI's pipeline list to the 4K / 1440p HDMI pipelines
+#   3. trims belaUI's pipeline list to HDMI 4K and USB 4K
 #   4. adds friendly connection names and a "what can my connections
 #      carry?" bitrate suggestion to belaUI's page
 #   5. guardian: each stream / reconnect starts gently; after a drop it caps
@@ -52,5 +52,5 @@ echo "   running"
 systemctl restart belaUI 2>/dev/null || true
 echo
 echo "Done. Reload belaUI, then pick:"
-echo "   rk3588/h265_hdmi_4k_2160p   for 4K   (camera's own frame rate, best quality)"
-echo "   rk3588/h265_hdmi_1440p      for 1440p"
+echo "   rk3588/h265_hdmi_4k_2160p          HDMI camera, 4K"
+echo "   rk3588/h265_libuvch264_4k_2160p30  DJI Pocket 3 on USB, 4K"
