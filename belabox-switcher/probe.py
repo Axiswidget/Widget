@@ -10,6 +10,11 @@ changes nothing, and prints a table to paste back.
 
 Each test runs in its own process with a time limit, so a stuck camera
 can't hang the check.
+
+Long stress test (stutters, memory, temperature over time):
+
+    sudo python3 probe.py --soak 30              # 30 minutes, HDMI + Pocket 3 + encoder
+    sudo python3 probe.py --soak 30 hdmi_mix     # or any test from the table
 """
 import json
 import os
@@ -106,7 +111,140 @@ def run_one(name, desc, seconds=8, warmup=2):
     os._exit(0)          # don't risk a hang in teardown
 
 
+def soc_temp():
+    best = None
+    for z in range(10):
+        try:
+            with open(f"/sys/class/thermal/thermal_zone{z}/temp") as f:
+                t = int(f.read()) / 1000
+            best = t if best is None else max(best, t)
+        except (OSError, ValueError):
+            pass
+    return best
+
+
+def rss_mb():
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return 0
+
+
+def soak(minutes, name):
+    """Run one workload for a long time; report stutters, stalls, memory and
+    temperature every minute. A fade between the inputs every 30 s, like a
+    real stream switching cameras."""
+    import threading
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import GLib, Gst
+    Gst.init(None)
+    desc = next(t[2] for t in TESTS if t[0] == name)
+    pipe = Gst.parse_launch(desc)
+    sink = pipe.get_by_name("sink")
+    comp = pipe.get_by_name("c")
+    st = {"last": None, "last_pts": None, "frames": 0, "stutters": 0, "hiccups": 0, "max_gap": 0.0, "stalls": 0,
+          "tot_hiccups": 0,
+          "tot_frames": 0, "tot_stutters": 0, "tot_stalls": 0, "worst_gap": 0.0, "errors": []}
+    lock = threading.Lock()
+
+    def on_buf(pad, info):
+        now = time.monotonic()
+        pts = info.get_buffer().pts
+        with lock:
+            # stutter = a missing/held frame in the video itself (timestamps
+            # more than 1.5 frames apart) - what a viewer would see
+            if st["last_pts"] is not None and pts != Gst.CLOCK_TIME_NONE:
+                gap = (pts - st["last_pts"]) / 1e9
+                if gap > 0.050:
+                    st["stutters"] += 1
+                st["max_gap"] = max(st["max_gap"], gap)
+            # hiccup = frames arriving very late (the pipeline paused)
+            if st["last"] is not None and now - st["last"] > 0.2:
+                st["hiccups"] += 1
+            if pts != Gst.CLOCK_TIME_NONE:
+                st["last_pts"] = pts
+            st["last"] = now
+            st["frames"] += 1
+        return Gst.PadProbeReturn.OK
+    sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+    loop = GLib.MainLoop()
+
+    def on_msg(bus, msg):
+        if msg.type == Gst.MessageType.ERROR:
+            err, _ = msg.parse_error()
+            st["errors"].append(f"{time.strftime('%H:%M:%S')} {msg.src.get_name()}: {err.message}")
+            print(f"  ERROR {st['errors'][-1]}", flush=True)
+            loop.quit()
+    bus = pipe.get_bus(); bus.add_signal_watch(); bus.connect("message", on_msg)
+
+    # fade between the inputs every 30 s (only for mixer tests)
+    pads = [p for p in (comp.sinkpads if comp else [])][1:]   # skip the black background
+    fade = {"t0": None, "to": 0}
+
+    def fade_tick():
+        if len(pads) < 2:
+            return False
+        if fade["t0"] is None:
+            fade["t0"], fade["to"] = time.monotonic(), 1 - fade["to"]
+        e = min(1.0, (time.monotonic() - fade["t0"]) / 0.6)
+        pads[fade["to"]].set_property("alpha", e)
+        pads[1 - fade["to"]].set_property("alpha", 1 - e)
+        if e >= 1.0:
+            fade["t0"] = None
+            return False
+        return True
+    GLib.timeout_add_seconds(30, lambda: (GLib.timeout_add(16, fade_tick), True)[1])
+
+    t_start = time.monotonic()
+    cpu0 = sum(os.times()[:2])
+    print(f"soak: {name} for {minutes} min (a fade every 30 s).")
+    print("  stutter = a missing frame in the video (visible); hiccup = the pipeline paused over 0.2 s")
+    print(f"{'time':>6s} {'fps':>5s} {'stutters':>8s} {'worst gap':>9s} {'hiccups':>7s} {'stalls':>6s} {'cpu%':>5s} {'mem MB':>6s} {'temp C':>6s}")
+
+    def report():
+        with lock:
+            f, s_, g, h = st["frames"], st["stutters"], st["max_gap"], st["hiccups"]
+            st["tot_frames"] += f; st["tot_stutters"] += s_; st["tot_hiccups"] += h
+            st["worst_gap"] = max(st["worst_gap"], g)
+            stalled = st["last"] is None or time.monotonic() - st["last"] > 5
+            if stalled:
+                st["stalls"] += 1; st["tot_stalls"] += 1
+            st["frames"] = st["stutters"] = st["hiccups"] = 0; st["max_gap"] = 0.0
+        el = time.monotonic() - t_start
+        cpu = 100 * (sum(os.times()[:2]) - report.cpu) / 60
+        report.cpu = sum(os.times()[:2])
+        t = soc_temp()
+        print(f"{int(el // 60):4d}m {f / 60:5.1f} {s_:8d} {g * 1000:7.0f}ms {h:7d} {('STALL' if stalled else '0'):>6s} "
+              f"{cpu:5.0f} {rss_mb():6.0f} {('%.0f' % t) if t else '?':>6s}", flush=True)
+        if el >= minutes * 60:
+            loop.quit()
+            return False
+        return True
+    report.cpu = cpu0
+    GLib.timeout_add_seconds(60, report)
+    pipe.set_state(Gst.State.PLAYING)
+    loop.run()
+    el = (time.monotonic() - t_start) / 60
+    print()
+    print(f"RESULT after {el:.0f} min: {st['tot_frames']} frames, {st['tot_stutters']} stutters, "
+          f"worst gap {st['worst_gap'] * 1000:.0f} ms, {st['tot_hiccups']} hiccups, "
+          f"{st['tot_stalls']} stalled minutes, {len(st['errors'])} errors")
+    verdict = ("SMOOTH" if st["tot_stutters"] == 0 and not st["tot_hiccups"] and not st["tot_stalls"]
+               and not st["errors"] else
+               "SOME STUTTER" if not st["tot_stalls"] and not st["errors"] else "NOT RELIABLE")
+    print(f"VERDICT: {verdict}")
+    os._exit(0)
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--soak":
+        soak(float(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else "both_fade_enc")
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--run":
         name = sys.argv[2]
         desc = next(t[2] for t in TESTS if t[0] == name)
