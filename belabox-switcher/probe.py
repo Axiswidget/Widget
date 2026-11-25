@@ -95,6 +95,10 @@ def run_one(name, desc, seconds=8, warmup=2):
     GLib.timeout_add(int(warmup * 1000), start_count)
     GLib.timeout_add(int((warmup + seconds) * 1000), loop.quit)
     loop.run()
+    q = Gst.Query.new_latency()
+    if pipe.query(q):
+        live, mn, mx = q.parse_latency()
+        res["delay_ms"] = round(mn / 1e6)
     if count["t0"] is not None:
         dt = time.monotonic() - count["t0"]
         res["frames"] = count["n"]
@@ -230,7 +234,10 @@ def soak(minutes, name):
     pipe.set_state(Gst.State.PLAYING)
     loop.run()
     el = (time.monotonic() - t_start) / 60
+    q = Gst.Query.new_latency()
+    delay = f"{q.parse_latency()[1] / 1e6:.0f} ms" if pipe.query(q) else "unknown"
     print()
+    print(f"DELAY added by this pipeline (camera in -> encoder out): {delay}")
     print(f"RESULT after {el:.0f} min: {st['tot_frames']} frames, {st['tot_stutters']} stutters, "
           f"worst gap {st['worst_gap'] * 1000:.0f} ms, {st['tot_hiccups']} hiccups, "
           f"{st['tot_stalls']} stalled minutes, {len(st['errors'])} errors")
@@ -267,7 +274,7 @@ def main():
         print("WARNING: belaUI is streaming. Press Stop in belaUI, then run this again.")
         return
     print()
-    print(f"{'test':15s} {'fps':>6s} {'cpu%':>5s}  {'format':32s} result")
+    print(f"{'test':15s} {'fps':>6s} {'cpu%':>5s} {'delay':>6s}  {'format':32s} result")
     for name, label, _ in TESTS:
         try:
             out = subprocess.run([sys.executable, __file__, "--run", name], capture_output=True,
@@ -279,7 +286,8 @@ def main():
             r = {"error": "bad result"}
         verdict = r.get("error") or ("OK" if r.get("fps", 0) >= 27 else
                                       "SLOW" if r.get("fps", 0) > 0 else "NO FRAMES")
-        print(f"{name:15s} {r.get('fps', 0):6.1f} {str(r.get('cpu', '')):>5s}  {r.get('caps', '')[:32]:32s} {verdict}")
+        d = f"{r['delay_ms']}ms" if r.get("delay_ms") is not None else ""
+        print(f"{name:15s} {r.get('fps', 0):6.1f} {str(r.get('cpu', '')):>5s} {d:>6s}  {r.get('caps', '')[:32]:32s} {verdict}")
         print(f"{'':15s} ({label})")
         time.sleep(1)          # let the camera settle between tests
 
