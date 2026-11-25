@@ -141,10 +141,11 @@ def exit_reason(since):
     'connect' - it never connected (no network / server unreachable)
     'camera'  - the video source stalled (e.g. HDMI hiccup)
     None      - unknown"""
-    cmd = (JOURNAL_CMD.split() if JOURNAL_CMD else
-           ["journalctl", "-u", "belaUI", "--since", f"@{int(since)}", "-o", "cat", "--no-pager"])
+    cmd = (JOURNAL_CMD if JOURNAL_CMD else
+           ["journalctl", "-u", "belaUI", "--since", f"@{int(since)}", "-n", "300", "-o", "cat", "--no-pager"])
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=4).stdout
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=4,
+                             shell=bool(JOURNAL_CMD)).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     if "SRT connection failed" in out or "SRT connection timed out" in out:
@@ -205,6 +206,7 @@ class Guardian:
         self.samples = []              # (time, tx bytes), last ~40 s
         self.last_sample = 0.0
         self.status = {}
+        self.stream_tx0 = None         # bytes sent when the stream was started
 
     # -- bitrate file
     def write_max(self, kbps):
@@ -260,6 +262,8 @@ class Guardian:
             "cap_reason": self.cap_reason,
             "drops": self.drops,
             "last_drop": time.strftime("%H:%M", time.localtime(self.last_drop)) if self.last_drop else None,
+            "data_gb": (round((self.samples[-1][1] - self.stream_tx0) / 1e9, 3)
+                        if streaming and self.stream_tx0 is not None and self.samples else None),
             "next_raise_in_s": (int(max(0, RAISE_AFTER - (time.time() - max(self.last_drop, self.last_raise))))
                                 if self.cap else None),
         }
@@ -306,24 +310,30 @@ class Guardian:
             if pid in self.seen or not handles_sighup(pid):
                 continue
             self.seen.add(pid)
-            new_run_start = now
             # a restart by belaUI after a drop, or you pressing Start?
             # (belaUI rewrites the bitrate file on Start, not on a restart)
             user_start = (file_mtime() != self.our_write and now - file_mtime() < 30)
-            if not user_start and self.last_exit and now - self.last_exit < RESTART_GAP:
+            restart = not user_start and self.last_exit and now - self.last_exit < RESTART_GAP
+            if user_start:
+                self.stream_tx0 = tx_bytes()
+            # 1. soften the start straight away, before anything slow
+            soft = min(START_KBPS, self.cap) if self.cap else START_KBPS
+            if (user_max_kbps() or 0) > soft:
+                self.write_max(soft)
+                os.kill(pid, signal.SIGHUP)
+                self.ramp = (pid, mono + RAMP_DELAY)
+                log(f"belacoder started (pid {pid}): soft start at {soft} kbps")
+            # 2. then work out whether it was a drop (reads belaUI's log)
+            if restart:
                 self.on_drop(now)
+                if self.ramp and self.cap and self.cap < soft:
+                    self.write_max(self.cap)
+                    os.kill(pid, signal.SIGHUP)
             elif user_start and self.cap:
                 log("stream started from belaUI: cap cleared")
                 self.cap, self.cap_reason = None, ""
-            self.run_start = new_run_start
-            eff = self.effective_max()
-            if eff and eff > START_KBPS:
-                self.write_max(START_KBPS)
-                os.kill(pid, signal.SIGHUP)
-                self.ramp = (pid, mono + RAMP_DELAY)
-                log(f"belacoder started (pid {pid}): soft start at {START_KBPS} kbps, "
-                    f"{eff} kbps in {RAMP_DELAY:.0f} s")
-            else:
+            self.run_start = now
+            if not self.ramp:
                 self.apply([pid])
 
         if self.ramp and (mono >= self.ramp[1] or self.ramp[0] not in pids):

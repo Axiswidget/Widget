@@ -1,4 +1,6 @@
 [Unit]
+# never give up restarting (the default stops after 5 failures in 10 s)
+StartLimitIntervalSec=0
 Description=BELABOX guardian (soft start, learns from drops, recovers on its own)
 After=belaUI.service
 

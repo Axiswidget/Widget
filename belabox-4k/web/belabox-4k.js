@@ -132,13 +132,14 @@
   }
   function guardianRow(row) {
     if (!guardian || !guardian.running) return '';
+    const data = guardian.data_gb != null ? row('Data used this stream', `${guardian.data_gb.toFixed(1)} GB`) : '';
     if (!guardian.cap_kbps) {
-      return row('Auto-protect', guardian.drops ? `On · ${guardian.drops} fixed` : 'On');
+      return row('Auto-protect', guardian.drops ? `On · ${guardian.drops} fixed` : 'On') + data;
     }
     const mins = guardian.next_raise_in_s != null ? Math.ceil(guardian.next_raise_in_s / 60) : null;
     return row('Auto-protect', `${fmt(guardian.cap_kbps)} cap`) +
       `<div class="bb4k-note">After a drop at ${guardian.last_drop || '?'}` +
-      (mins != null ? ` · back up in ${mins} min` : '') + '</div>';
+      (mins != null ? ` · back up in ${mins} min` : '') + '</div>' + data;
   }
 
   function updateCapacity(totalKbps) {

@@ -72,6 +72,21 @@ The panel's **4K quality** line tells you how good the picture is at what your c
 | 7 | iPhone hotspot: keep the phone **charging and unlocked**, or use a real modem | iOS can slow or pause the hotspot to save power |
 | 8 | **A "Be right back" scene in OBS** (e.g. with NOALBS) | When the signal really is gone, viewers see a BRB screen instead of a frozen or blank one |
 
+## Check it on the box (self-test)
+
+```
+cd ~/Widget/belabox-4k && sudo ./selftest.sh
+```
+Run it once before streaming, and once **while streaming**, which adds the live checks. It changes nothing and prints PASS / FAIL / WARN for:
+* the guardian: running, starting at boot, restarted forever, no errors;
+* belaUI's log being readable;
+* the 30 Mbps limit;
+* the pipeline list and the HDMI input;
+* the add-on;
+* while streaming, that the encoder accepts bitrate reloads.
+
+The panel also shows **Data used this stream** (mobile data sent since you pressed Start), which helps on long streams with limited SIM data.
+
 ## Undo
 
 ```
