@@ -13,11 +13,14 @@ The guardian fixes that automatically, without restarting anything:
 1. Soft start. Each stream and each restart begins at START_KBPS, then the
    max is put back after RAMP_DELAY seconds and belacoder climbs by itself,
    only while the connection stays stable (its normal behaviour).
-2. Learns from drops. When belacoder restarts on its own (a drop, not you
-   pressing Start), the guardian caps the bitrate at 80% of what the
-   connections were actually carrying just before, so it stops overloading.
-3. Recovers. After every RAISE_AFTER seconds without a drop, the cap is
-   raised by RAISE_STEP, until it is back at your max.
+2. Learns from drops. When belacoder restarts on its own because the SRT
+   connection failed (not you pressing Start, not a camera hiccup, not
+   "couldn't connect at all" - belaUI's log says which), the guardian caps
+   the bitrate at 80% of what the connections were actually carrying just
+   before, so it stops overloading them.
+3. Recovers. After every RAISE_AFTER seconds (3 min) without a drop, the
+   cap is raised by RAISE_STEP (25%) until it is back at your max, with no
+   restart.
 4. Your choice wins. Moving belaUI's bitrate slider (or pressing Start)
    clears the cap.
 
@@ -40,11 +43,13 @@ RAMP_DELAY = float(E("GUARDIAN_RAMP_DELAY", "6"))
 MIN_CAP_KBPS = int(E("GUARDIAN_MIN_CAP_KBPS", "2000"))
 CAP_SHARE = 0.8                                          # cap = 80% of what the links carried
 RAISE_AFTER = float(E("GUARDIAN_RAISE_AFTER", "180"))    # 3 min without a drop (walking: signal changes fast)...
-RAISE_STEP = 1.15                                        # ...raises the cap by 15%
+RAISE_STEP = float(E("GUARDIAN_RAISE_STEP", "1.25"))    # ...raises the cap by 25%
 RESTART_GAP = float(E("GUARDIAN_RESTART_GAP", "15"))     # belaUI restarts belacoder ~2 s later
 FORGET_AFTER = float(E("GUARDIAN_FORGET_AFTER", "600"))  # idle this long: a new stream, new place
 SYSFS_NET = E("GUARDIAN_SYSFS_NET", "/sys/class/net")
 POLL = 0.2
+MIN_CARRIED_KBPS = 1000      # below this no real stream was flowing: nothing to learn
+JOURNAL_CMD = E("GUARDIAN_JOURNAL_CMD", "")   # tests only
 
 
 def log(*a):
@@ -99,17 +104,56 @@ def file_mtime():
         return 0.0
 
 
+_comm_cache = {}   # pid -> (is_belacoder, first_seen)
+
+
 def belacoder_pids():
-    out = []
+    """PIDs of belacoder. Each process is read once; processes younger than
+    3 s are re-read, because belaUI forks and then execs belacoder."""
+    now = time.monotonic()
+    out, alive = [], set()
     for p in os.listdir("/proc"):
-        if p.isdigit():
-            try:
-                with open(f"/proc/{p}/comm") as f:
-                    if f.read().strip() == "belacoder":
-                        out.append(int(p))
-            except OSError:
-                pass
+        if not p.isdigit():
+            continue
+        alive.add(p)
+        hit = _comm_cache.get(p)
+        if hit and (hit[0] or now - hit[1] > 3):
+            if hit[0]:
+                out.append(int(p))
+            continue
+        try:
+            with open(f"/proc/{p}/comm") as f:
+                is_bc = f.read().strip() == "belacoder"
+        except OSError:
+            continue
+        _comm_cache[p] = (is_bc, hit[1] if hit else now)
+        if is_bc:
+            out.append(int(p))
+    for p in list(_comm_cache):
+        if p not in alive:
+            del _comm_cache[p]
     return out
+
+
+def exit_reason(since):
+    """Why did belacoder stop? From belaUI's log (belacoder's messages):
+    'link'    - the SRT connection failed or timed out (connections overloaded / lost)
+    'connect' - it never connected (no network / server unreachable)
+    'camera'  - the video source stalled (e.g. HDMI hiccup)
+    None      - unknown"""
+    cmd = (JOURNAL_CMD.split() if JOURNAL_CMD else
+           ["journalctl", "-u", "belaUI", "--since", f"@{int(since)}", "-o", "cat", "--no-pager"])
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=4).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if "SRT connection failed" in out or "SRT connection timed out" in out:
+        return "link"
+    if "Failed to establish an SRT connection" in out:
+        return "connect"
+    if "Pipeline stall" in out or "gstreamer error" in out.lower():
+        return "camera"
+    return None
 
 
 def handles_sighup(pid):
@@ -153,6 +197,8 @@ class Guardian:
         self.seen = set()
         self.ramp = None               # (pid, deadline)
         self.last_exit = 0.0           # when belacoder was last seen stopping
+        self.run_start = 0.0           # when the current belacoder run started
+        self.exited_run_start = 0.0    # start of the run that last stopped
         self.had_belacoder = False
         self.our_write = 0.0           # mtime of our own last write
         self.user_seen = user_max_kbps()
@@ -199,7 +245,7 @@ class Guardian:
 
     def recent_kbps(self, before, span=20):
         """Average send rate over `span` seconds before `before` (kbps)."""
-        pts = [s for s in self.samples if before - span - 1 <= s[0] <= before]
+        pts = [s for s in self.samples if before - span <= s[0] <= before + 0.5]
         if len(pts) < 2 or pts[-1][0] - pts[0][0] < 3:
             return None
         return (pts[-1][1] - pts[0][1]) * 8 / 1000 / (pts[-1][0] - pts[0][0])
@@ -246,6 +292,7 @@ class Guardian:
 
         if self.had_belacoder and not pids:
             self.last_exit = now
+            self.exited_run_start = self.run_start
         self.had_belacoder = bool(pids)
 
         # forget the cap after a long break (new stream, probably new place)
@@ -259,6 +306,7 @@ class Guardian:
             if pid in self.seen or not handles_sighup(pid):
                 continue
             self.seen.add(pid)
+            new_run_start = now
             # a restart by belaUI after a drop, or you pressing Start?
             # (belaUI rewrites the bitrate file on Start, not on a restart)
             user_start = (file_mtime() != self.our_write and now - file_mtime() < 30)
@@ -267,6 +315,7 @@ class Guardian:
             elif user_start and self.cap:
                 log("stream started from belaUI: cap cleared")
                 self.cap, self.cap_reason = None, ""
+            self.run_start = new_run_start
             eff = self.effective_max()
             if eff and eff > START_KBPS:
                 self.write_max(START_KBPS)
@@ -299,22 +348,27 @@ class Guardian:
         self.write_status(streaming)
 
     def on_drop(self, now):
+        # only what the run that just failed carried (not an earlier run)
+        span = min(20.0, self.last_exit - self.exited_run_start) if self.exited_run_start else 20.0
+        carried = self.recent_kbps(self.last_exit, span) if span >= 3 else None
+        reason = exit_reason(self.last_exit - 30)
+        if reason in ("camera", "connect"):
+            log(f"belacoder restarted ({'camera/video source' if reason == 'camera' else 'could not connect'}): "
+                "not a bandwidth problem, bitrate left as is")
+            return
+        if not carried or carried < MIN_CARRIED_KBPS:
+            log("belacoder restarted before any real data flowed: nothing to learn, bitrate left as is")
+            return
         self.drops += 1
         self.last_drop = now
-        carried = self.recent_kbps(self.last_exit)
         current = self.cap or user_max_kbps() or START_KBPS
-        if carried:
-            new = int(carried * CAP_SHARE)
-        else:
-            new = int(current * 0.75)
+        new = int(carried * CAP_SHARE)
         new = max(MIN_CAP_KBPS, min(new, current))
         new = new // 250 * 250
         self.cap = new
-        self.cap_reason = (f"drop at {time.strftime('%H:%M')}: connections carried "
-                           f"{carried/1000:.1f} Mbps" if carried else f"drop at {time.strftime('%H:%M')}")
-        log(f"stream dropped (#{self.drops}); "
-            + (f"connections carried {carried:.0f} kbps; " if carried else "")
-            + f"capping at {new} kbps")
+        self.cap_reason = f"drop at {time.strftime('%H:%M')}: connections carried {carried/1000:.1f} Mbps"
+        log(f"stream dropped (#{self.drops}, {reason or 'reason unknown'}); "
+            f"connections carried {carried:.0f} kbps; capping at {new} kbps")
 
     def restore(self):
         u = user_max_kbps()
