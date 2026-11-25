@@ -5,6 +5,7 @@
 #   3. trims belaUI's pipeline list to the 4K / 1440p HDMI pipelines
 #   4. adds friendly connection names and a "what can my connections
 #      carry?" bitrate suggestion to belaUI's page
+#   5. soft start: each stream / reconnect starts at 4 Mbps, then climbs
 # Every step can be undone; see README.md.   Run:  sudo ./install.sh
 set -e
 cd "$(dirname "$0")"
@@ -32,6 +33,15 @@ echo "== 3. belaUI pipeline list"
 
 echo "== 4. belaUI add-on: connection names + 'What can my connections carry?'"
 ./belaui-addon.sh || echo "   (skipped - see the message above)"
+
+echo "== 5. Soft start: every stream and reconnect starts gently, then climbs"
+mkdir -p /opt/belabox-softstart
+cp softstart/belabox-softstart.py /opt/belabox-softstart/
+cp softstart/belabox-softstart.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable belabox-softstart >/dev/null 2>&1 || true
+systemctl restart belabox-softstart
+echo "   running"
 
 systemctl restart belaUI 2>/dev/null || true
 echo

@@ -6,7 +6,8 @@ Small, reversible tweaks for streaming a **4K or 1440p HDMI camera** with BELABO
 2. **A tidy pipeline list.** belaUI shows just four pipelines: **HDMI 4K, HDMI 1440p, USB 4K and USB 1440p** (USB = DJI Osmo Pocket 3). Cam Link, test pattern, 1080p, 720p and the rest are moved to a `pipelines-hidden` folder, not deleted. The pipeline you currently have selected is always kept.
 3. **Named connections.** belaUI's connection list shows names like **Ethernet**, **iPhone hotspot** or **EE 5G**, with the signal strength underneath. Tap a name to set your own; each phone or browser remembers its own names.
 4. **"What can my connections carry?"** Under the connection list, while streaming, it shows what your connections are sending, the best they managed in the last 2 minutes, a **suggested max bitrate** (80% of that best) with a **Use** button, and the **best resolution** for it (4K / 1440p / 1080p). If your connections keep up with your max, it tells you that instead. The suggestion needs about 20 s of streaming, and it only changes anything when you press **Use**.
-5. **Removes the old multicam switcher** if it was installed.
+5. **Soft start (reliability).** BELABOX's encoder starts every stream, and every automatic reconnect, at the **max** bitrate. If that's more than the connections can carry, the start overloads them, the SRT connection fails, and the stream goes blank and restarts in a loop. A small helper (`belabox-softstart` service) makes each start begin at **4 Mbps**, then puts your max back after 6 s. The encoder then climbs to it on its own, only while the connection stays stable. It uses the same bitrate file and reload signal as belaUI's slider, waits until the encoder is ready for that signal, and always restores your max. If the helper isn't running, BELABOX behaves exactly as stock.
+6. **Removes the old multicam switcher** if it was installed.
 
 ## Install (Windows laptop)
 
@@ -43,6 +44,19 @@ For the Pocket 3, put it in **webcam (USB streaming) mode** when you plug it in.
 | **In-camera sharpening / noise** | sharpening **low**, noise reduction **on** | Noise and over-sharpening waste bitrate and turn into blocky artifacts in motion |
 | **Audio codec** | Opus | Better quality than AAC at the same bitrate |
 
+## Reliability checklist
+
+| | Do this | Why |
+|---|---|---|
+| 1 | **Two or three modems / SIMs on different networks** (e.g. EE + Vodafone + Three) | When one network is weak in an area, the others carry the stream. This is the biggest reliability gain |
+| 2 | **External antennas**, modems high up, not inside a bag against your body | Better signal means more bitrate and fewer drops |
+| 3 | **SRT latency 3000 ms** in patchy areas (2000 ms in good ones) | More time to re-send lost packets, so short dips don't show |
+| 4 | **Max bitrate about 80% of what the connections carry.** The add-on's *Use* button does this | Leaves headroom for dips |
+| 5 | **Powered USB hub** for modems, and a good power supply for the Rock 5T | Modems drop out when USB power sags |
+| 6 | **Keep the Rock 5T cool** (a fan or heatsink, and not in direct sun) | Hot chips slow down. Watch *SoC temperature* in belaUI; under about 70 °C is comfortable |
+| 7 | iPhone hotspot: keep the phone **charging and unlocked**, or use a real modem | iOS can slow or pause the hotspot to save power |
+| 8 | **A "Be right back" scene in OBS** (e.g. with NOALBS) | When the signal really is gone, viewers see a BRB screen instead of a frozen or blank one |
+
 ## Undo
 
 ```
@@ -50,6 +64,7 @@ cd ~/Widget/belabox-4k
 sudo ./belaui-pipelines.sh --restore   # show all pipelines again
 sudo ./belaui-bitrate.sh --revert      # back to the 12 Mbps limit
 sudo ./belaui-addon.sh --revert        # remove the names / bitrate suggestion
+sudo systemctl disable --now belabox-softstart   # turn soft start off
 ```
 
 ## After a BELABOX update
